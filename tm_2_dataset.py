@@ -1,4 +1,9 @@
-import csv
+"""
+TMX to CSV Converter
+Este script convierte archivos TMX (Translation Memory eXchange) a formato CSV,
+extrayendo pares de traducción junto con información de contexto.
+"""
+
 import re
 import os
 import sys
@@ -6,7 +11,7 @@ from xml.sax.saxutils import unescape
 
 def read_file(file_path):
     """
-    Read file with correct encoding (tries UTF-16 first, then falls back to UTF-8)
+    Lee un archivo con la codificación correcta (primero intenta UTF-16, luego UTF-8)
     """
     encodings = ['utf-16', 'utf-8', 'latin-1']
     content = None
@@ -16,52 +21,52 @@ def read_file(file_path):
             with open(file_path, 'r', encoding=encoding) as file:
                 content = file.read()
                 if content:
-                    print(f"Successfully read file using {encoding} encoding")
+                    print(f"Archivo leído correctamente con codificación {encoding}")
                     break
         except Exception as e:
-            print(f"Failed to read with {encoding} encoding: {e}")
+            print(f"Error al leer con codificación {encoding}: {e}")
     
     if not content:
-        raise ValueError(f"Could not read file {file_path} with any of the attempted encodings")
+        raise ValueError(f"No se pudo leer el archivo {file_path} con ninguna de las codificaciones intentadas")
     
     return content
 
 def extract_translation_pairs(xml_content):
     """
-    Extract translation pairs using regex pattern matching
+    Extrae pares de traducción utilizando patrones regex
     """
     translations = []
     counter = 1
     
-    # Extract source and target languages
+    # Extrae los idiomas origen y destino
     srclang_match = re.search(r'srclang=["\']([^"\']+)["\']', xml_content)
     targetlang_match = re.search(r'type=["\']targetlang["\']>([^<]+)<', xml_content)
     
     source_language = srclang_match.group(1) if srclang_match else "en"
     target_language = targetlang_match.group(1) if targetlang_match else "es"
     
-    print(f"Source language: {source_language}, Target language: {target_language}")
+    print(f"Idioma origen: {source_language}, Idioma destino: {target_language}")
     
-    # Find all translation units
+    # Encuentra todas las unidades de traducción
     tu_pattern = r'<tu[^>]*>.*?</tu>'
     tus = re.findall(tu_pattern, xml_content, re.DOTALL)
     
-    print(f"Found {len(tus)} translation units")
+    print(f"Se encontraron {len(tus)} unidades de traducción")
     
     for tu in tus:
-        # Extract the source segment
+        # Extrae el segmento origen
         source_pattern = r'<tuv\s+xml:lang=["\']' + source_language + r'["\'][^>]*>.*?<seg>(.*?)</seg>'
         source_match = re.search(source_pattern, tu, re.DOTALL)
         
-        # Extract the target segment
+        # Extrae el segmento destino
         target_pattern = r'<tuv\s+xml:lang=["\']' + target_language + r'["\'][^>]*>.*?<seg>(.*?)</seg>'
         target_match = re.search(target_pattern, tu, re.DOTALL)
         
-        # Extract context information
+        # Extrae información de contexto
         context_pre = ""
         context_post = ""
         
-        # Search for context in the source tuv
+        # Busca contexto en el tuv origen
         source_tuv_pattern = r'<tuv\s+xml:lang=["\']' + source_language + r'["\'][^>]*>(.*?)</tuv>'
         source_tuv_match = re.search(source_tuv_pattern, tu, re.DOTALL)
         
@@ -84,7 +89,7 @@ def extract_translation_pairs(xml_content):
             source_text = source_match.group(1).strip()
             target_text = target_match.group(1).strip()
             
-            # Unescape XML entities
+            # Decodifica entidades XML
             source_text = unescape(source_text)
             target_text = unescape(target_text)
             context_pre = unescape(context_pre)
@@ -106,28 +111,61 @@ def extract_translation_pairs(xml_content):
 
 def save_to_csv(translations, output_file):
     """
-    Save translations to CSV file
+    Guarda las traducciones en un archivo CSV sin comas adicionales para campos vacíos
     """
     if not translations:
-        print("No translations found!")
+        print("¡No se encontraron traducciones!")
         return False
     
-    fieldnames = ['ID', 'source', 'source_language', 'target', 'target_language', 'x-context-pre', 'x-context-post']
+    # Define campos requeridos y opcionales
+    required_fields = ['ID', 'source', 'source_language', 'target', 'target_language']
+    optional_fields = ['x-context-pre', 'x-context-post']
     
     try:
         with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(translations)
+            # Primero, escribe el encabezado - incluimos todos los campos
+            header = ','.join(required_fields + optional_fields)
+            csvfile.write(header + '\n')
+            
+            # Procesa cada fila de traducción manualmente
+            for translation in translations:
+                row_values = []
+                
+                # Añade los campos requeridos con comillas si es necesario
+                for field in required_fields:
+                    value = translation.get(field, "")
+                    # Añade comillas si el valor contiene comas, comillas o saltos de línea
+                    if isinstance(value, str) and (',' in value or '"' in value or '\n' in value):
+                        # Reemplaza comillas dobles con comillas dobles escapadas
+                        value = '"' + str(value).replace('"', '""') + '"'
+                    row_values.append(str(value))
+                
+                # Verifica si los campos opcionales tienen contenido
+                optional_content = False
+                for field in optional_fields:
+                    if field in translation and translation[field] and translation[field].strip():
+                        optional_content = True
+                        break
+                
+                # Solo añade los campos opcionales si al menos uno tiene contenido
+                if optional_content:
+                    for field in optional_fields:
+                        value = translation.get(field, "")
+                        if isinstance(value, str) and (',' in value or '"' in value or '\n' in value):
+                            value = '"' + str(value).replace('"', '""') + '"'
+                        row_values.append(str(value))
+                
+                # Escribe la fila
+                csvfile.write(','.join(row_values) + '\n')
         
-        print(f"Successfully saved {len(translations)} translations to {output_file}")
+        print(f"Se guardaron correctamente {len(translations)} traducciones en {output_file}")
         return True
     except Exception as e:
-        print(f"Error saving to CSV: {e}")
+        print(f"Error al guardar en CSV: {e}")
         return False
 
 
-input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\AI_Translation_Engines\sample data\TM\[EN-ES] CF - iDISC.tmx"
+input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\MM-Mitsubishi MUT EN-ES.tmx"
 output_file = "translations.csv"
 
 if len(sys.argv) > 1:
@@ -137,27 +175,28 @@ if len(sys.argv) > 2:
     output_file = sys.argv[2]
 
 try:
-    # Read the TMX file
+    # Lee el archivo TMX
     xml_content = read_file(input_file)
     
-    # Extract translation pairs
+    # Extrae los pares de traducción
     translations = extract_translation_pairs(xml_content)
     
-    # Save to CSV
+    # Guarda en CSV
     success = save_to_csv(translations, output_file)
     
     if success:
-        print(f"Conversion completed successfully. Output saved to {output_file}")
-        # Print the first few translations as a preview
+        print(f"Conversión completada exitosamente. Salida guardada en {output_file}")
+        # Muestra las primeras traducciones como vista previa
         for i, trans in enumerate(translations[:3]):
-            print(f"\nSample {i+1}:")
+            print(f"\nEjemplo {i+1}:")
             for key, value in trans.items():
-                print(f"{key}: {value}")
+                if value:  # Solo muestra campos con contenido
+                    print(f"{key}: {value}")
     else:
-        print("Conversion failed.")
+        print("La conversión falló.")
 
 except Exception as e:
-    print(f"Error processing TMX file: {e}")
+    print(f"Error al procesar el archivo TMX: {e}")
     import traceback
     traceback.print_exc()
 
