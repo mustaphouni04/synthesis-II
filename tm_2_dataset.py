@@ -166,7 +166,7 @@ def save_to_csv(translations, output_file):
 
 
 input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\MM-Mitsubishi MUT EN-ES.tmx"
-output_file = "translations.csv"
+output_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\translations.csv"
 
 if len(sys.argv) > 1:
     input_file = sys.argv[1]
