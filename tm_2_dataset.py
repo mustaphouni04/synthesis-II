@@ -51,6 +51,12 @@ def clean_html_tags(text):
     # Remove content between <ph> and </ph> along with the tags
     text = re.sub(r'<ph>.*?</ph>', '', text, flags=re.DOTALL)
     
+    # Remove content between <bpt and </bpt> along with the tags
+    text = re.sub(r'<bpt[^>]*>.*?</bpt>', '', text, flags=re.DOTALL)
+    
+    # Remove content between <ept and </ept> along with the tags
+    text = re.sub(r'<ept[^>]*>.*?</ept>', '', text, flags=re.DOTALL)
+    
     # Remove <seg> and </seg> tags while keeping their content
     text = re.sub(r'<seg>(.*?)</seg>', r'\1', text, flags=re.DOTALL)
     
@@ -182,8 +188,8 @@ def save_to_csv(translations, output_file, delimiter=';'):
         print(f"Error saving to CSV: {e}")
         return False
 
-input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\MM-Mitsubishi MUT EN-ES.tmx"
-output_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\translations.csv"
+input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\zMM23J084-en-gb-es-es.tmx"
+output_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\zMM23J084-en-gb-es-es.csv"
 delimiter = ';'  # Semicolon for better Excel compatibility
 
 if len(sys.argv) > 1:
