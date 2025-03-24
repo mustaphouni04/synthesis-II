@@ -2,6 +2,7 @@
 TMX to CSV Converter
 This script converts TMX (Translation Memory eXchange) files to CSV format,
 extracting translation pairs along with context information.
+Avoids duplications by keeping only unique source-target pairs.
 """
 
 import re
@@ -28,7 +29,7 @@ def read_file(file_path):
             print(f"Error reading with encoding {encoding}: {e}")
     
     if not content:
-        raise ValueError(f"Could not read the file {file_path} with any of the attempted encaodings")
+        raise ValueError(f"Could not read the file {file_path} with any of the attempted encodings")
     
     return content
 
@@ -57,6 +58,9 @@ def clean_html_tags(text):
     # Remove content between <ept and </ept> along with the tags
     text = re.sub(r'<ept[^>]*>.*?</ept>', '', text, flags=re.DOTALL)
     
+    # Remove <it> and </it> tags while keeping their content
+    text = re.sub(r'<it[^>]*>(.*?)</it>', r'\1', text, flags=re.DOTALL)
+    
     # Remove <seg> and </seg> tags while keeping their content
     text = re.sub(r'<seg>(.*?)</seg>', r'\1', text, flags=re.DOTALL)
     
@@ -68,6 +72,8 @@ def extract_translation_pairs(xml_content):
     """
     translations = []
     counter = 1
+    # To track unique source-target pairs
+    unique_pairs = set()
     
     # Extract source and target languages
     srclang_match = re.search(r'srclang=["\']([^"\']+)["\']', xml_content)
@@ -123,18 +129,26 @@ def extract_translation_pairs(xml_content):
             source_text = clean_html_tags(source_match.group(1))
             target_text = clean_html_tags(target_match.group(1))
             
-            translations.append({
-                'ID': counter,
-                'source': source_text,
-                'source_language': source_language,
-                'target': target_text,
-                'target_language': target_language,
-                'x-context-pre': context_pre,
-                'x-context-post': context_post
-            })
+            # Create a unique key for the source-target pair
+            pair_key = (source_text, target_text)
             
-            counter += 1
+            # Only add if this pair is not already in our unique pairs set
+            if pair_key not in unique_pairs:
+                unique_pairs.add(pair_key)
+                
+                translations.append({
+                    'ID': counter,
+                    'source': source_text,
+                    'source_language': source_language,
+                    'target': target_text,
+                    'target_language': target_language,
+                    'x-context-pre': context_pre,
+                    'x-context-post': context_post
+                })
+                
+                counter += 1
     
+    print(f"Found {len(unique_pairs)} unique translation pairs out of {len(tus)} total translation units")
     return translations
 
 def save_to_csv(translations, output_file, delimiter=';'):
@@ -181,15 +195,15 @@ def save_to_csv(translations, output_file, delimiter=';'):
                 row_data = {field: translation.get(field, '') for field in all_fields}
                 writer.writerow(row_data)
         
-        print(f"Successfully saved {len(translations)} translations to {output_file}")
+        print(f"Successfully saved {len(translations)} unique translations to {output_file}")
         print(f"The file was saved with UTF-8 with BOM encoding for proper display in Excel")
         return True
     except Exception as e:
         print(f"Error saving to CSV: {e}")
         return False
 
-input_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\zMM23J084-en-gb-es-es.tmx"
-output_file = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\zMM23J084-en-gb-es-es.csv"
+input_file = r"Files\TM\zMM23J084-en-gb-es-es.tmx"
+output_file = r"Files\TM\zMM23J084-en-gb-es-es.csv"
 delimiter = ';'  # Semicolon for better Excel compatibility
 
 if len(sys.argv) > 1:
@@ -226,4 +240,3 @@ except Exception as e:
     print(f"Error processing the TMX file: {e}")
     import traceback
     traceback.print_exc()
-

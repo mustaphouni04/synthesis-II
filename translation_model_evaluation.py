@@ -22,7 +22,7 @@ import nltk
 import warnings
 
 # Configuration
-CSV_PATH = r"C:\Users\Miguel\OneDrive\Escritorio\4t curs\second_semester\synthetsis_project_II\Files\TM\MM-Mitsubishi MUT EN-ES.csv"
+CSV_PATH = r"Files\TM\MM-Mitsubishi MUT EN-ES.csv"
 MAX_SAMPLES = 100  # Limit to 3000 samples
 OUTPUT_FILE = "translation_evaluation_results.csv"
 BATCH_SIZE = 8
