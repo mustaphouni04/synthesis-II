@@ -28,7 +28,7 @@ def read_file(file_path):
             print(f"Error reading with encoding {encoding}: {e}")
     
     if not content:
-        raise ValueError(f"Could not read the file {file_path} with any of the attempted encodings")
+        raise ValueError(f"Could not read the file {file_path} with any of the attempted encaodings")
     
     return content
 
