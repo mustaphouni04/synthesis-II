@@ -10,8 +10,8 @@ import numpy as np
 import os
 
 # Configuration
-INPUT_CSV = "translation_evaluation_results.csv"  # Path to the CSV file with results
-OUTPUT_DIR = "charts"  # Directory to save the charts
+INPUT_CSV = "results/translation_evaluation_results.csv"  # Path to the CSV file with results
+OUTPUT_DIR = "results/charts"  # Directory to save the charts
 
 def load_results(csv_path):
     """Load results from CSV file"""
