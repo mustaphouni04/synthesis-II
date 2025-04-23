@@ -202,8 +202,8 @@ def save_to_csv(translations, output_file, delimiter=';'):
         print(f"Error saving to CSV: {e}")
         return False
 
-input_file = r"Files\TM\zMM23J084-en-gb-es-es.tmx"
-output_file = r"Files\TM\zMM23J084-en-gb-es-es.csv"
+input_file = r"../Files/TM/mitsubishi_wsm.tmx"
+output_file = r"../Files/TM/mitsubishi_wsm.csv"
 delimiter = ';'  # Semicolon for better Excel compatibility
 
 if len(sys.argv) > 1:

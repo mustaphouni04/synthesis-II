@@ -52,10 +52,10 @@ def concatenate_csvs(input_dir, output_file):
     print(f"Successfully created {output_file} with {len(combined_df)} rows")
 
 # Directory containing CSV files
-input_directory = "Files/TM"
+input_directory = "../Files/TM"
 
 # Output file path
-output_csv = "Files/training_dataset.csv"
+output_csv = "../Files/training_dataset.csv"
 
 # Call the function to concatenate CSV files
 concatenate_csvs(input_directory, output_csv)
