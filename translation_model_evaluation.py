@@ -22,10 +22,10 @@ import nltk
 import warnings
 
 # Configuration
-CSV_PATH = r"Files\TM\MM-Mitsubishi MUT EN-ES.csv"
-MAX_SAMPLES = 100  # Limit to 3000 samples
+CSV_PATH = r"test_set.csv"
+MAX_SAMPLES = 41651  # Limit to 3000 samples
 OUTPUT_FILE = "results/translation_evaluation_results.csv"
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -83,7 +83,7 @@ class TranslationModel:
 
 class MarianNMTModel(TranslationModel):
     """Helsinki-NLP's MarianMT model for translation"""
-    def __init__(self, model_name="Helsinki-NLP/opus-mt-en-es"):
+    def __init__(self, model_name="tst_translation/checkpoint-83301"):
         super().__init__(name="MarianNMT")
         print(f"Loading {model_name}...")
         self.tokenizer = MarianTokenizer.from_pretrained(model_name)
