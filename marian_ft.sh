@@ -1,10 +1,10 @@
-TRAIN_SET=../Files/train_set.csv
-VALID_SET=../Files/valid_set.csv
-TEST_SET=../Files/test_set.csv
-OUTPUT_DIR=/tmp/tst_translation
-TRAIN_BATCH_SIZE=4
-TEST_BATCH_SIZE=4
-MAX_SOURCE_LENGTH=512
+TRAIN_SET=train_set.csv
+VALID_SET=valid_set.csv
+TEST_SET=test_set.csv
+OUTPUT_DIR=tst_translation/
+TRAIN_BATCH_SIZE=12
+TEST_BATCH_SIZE=12
+MAX_SOURCE_LENGTH=512 # the max for marian 
 
 
 python run_translation.py \

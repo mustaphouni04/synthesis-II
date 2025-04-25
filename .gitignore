@@ -172,3 +172,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+training_dataset.csv
+train_set.csv
+valid_set.csv
+test_set.csv
+mlruns/
+tst_translation/
