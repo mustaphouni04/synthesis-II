@@ -1,7 +1,7 @@
+import datasets
 from datasets import load_dataset
 from typing import List, Tuple, Dict, Optional, Union
 from pathlib import Path
-from datetime import UTC, datetime
 import lxml.etree as etree
 import PythonTmx as tmx
 import pandas as pd
@@ -13,12 +13,15 @@ class DomainProcessing:
         self.paths = [Path(p) for p in (paths if isinstance(paths,list) else [paths])]
         self.domain = None
         self.sentences = []
+
+        if str(self.paths[0]).endswith(".csv") and isinstance(str(self.paths[0]), str):
+            self.domain = pd.read_csv(self.paths[0])
         
         for path in self.paths:
             try:
                 self.domain = load_dataset(str(path))
                 self.content = None
-            except:
+            except datasets.exceptions.DatasetNotFoundError:
                 if type(path) == Path:
                     path = str(path)
                 else:
