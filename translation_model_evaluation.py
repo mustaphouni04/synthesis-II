@@ -23,9 +23,9 @@ import warnings
 
 # Configuration
 CSV_PATH = r"test_set.csv"
-MAX_SAMPLES = 41651  # Limit to 3000 samples
+MAX_SAMPLES = 2000 #41651  # Size of the test set
 OUTPUT_FILE = "results/translation_evaluation_results.csv"
-BATCH_SIZE = 16
+BATCH_SIZE = 1
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -83,7 +83,7 @@ class TranslationModel:
 
 class MarianNMTModel(TranslationModel):
     """Helsinki-NLP's MarianMT model for translation"""
-    def __init__(self, model_name="tst_translation/checkpoint-83301"):
+    def __init__(self, model_name="Helsinki-NLP/opus-mt-en-es"):
         super().__init__(name="MarianNMT")
         print(f"Loading {model_name}...")
         self.tokenizer = MarianTokenizer.from_pretrained(model_name)
@@ -142,7 +142,7 @@ class NLLBModel(TranslationModel):
         # Force the decoder to generate Spanish (Latin script)
         translated = self.model.generate(
             **inputs,
-            forced_bos_token_id=self.tokenizer.lang_code_to_id["spa_Latn"]
+            forced_bos_token_id=self.tokenizer.encode("spa_Latn")[0]
         )
         return self.tokenizer.batch_decode(translated, skip_special_tokens=True)
 
