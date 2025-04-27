@@ -21,7 +21,7 @@ class DomainProcessing:
             try:
                 self.domain = load_dataset(str(path))
                 self.content = None
-            except datasets.exceptions.DatasetNotFoundError:
+            except:
                 if type(path) == Path:
                     path = str(path)
                 else:

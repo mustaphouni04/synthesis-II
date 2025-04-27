@@ -6,6 +6,8 @@ from pathlib import Path
 from domain_utils import DomainProcessing
 from typing import Tuple, Dict, List, Union, Optional
 import pandas as pd
+from tqdm import tqdm
+import os
 
 device = "cuda" if th.cuda.is_available() else "cpu"
 
@@ -26,10 +28,27 @@ class MarianMAMLWrapper(nn.Module):
         )
         return outputs.loss
 
-def support_query_split(df: pd.DataFrame, Sd: int, Qd:int):
-    en, es = df["en"].values, df["es"].values
-    support_pairs = [(eng_sample, esp_sample) for eng_sample, es_sample in zip(en[:Sd], es[:Sd])]
-    query_pairs = [(eng_sample, esp_sample) for eng_sample, es_sample in zip(en[Sd:Qd], es[Sd:Qd])]
+def support_query_split(df: pd.DataFrame, Sd: int, Qd:int, dataset_type: str):
+    data = {}
+
+    if "train" in df:
+        df = df["train"]
+    else:
+        pass
+    
+    cols = ["sentence_en", "sentence_es"]
+    
+    if dataset_type == "Dataset":
+        ls = [col for col in cols if col in df.column_names]
+        if ls == []:
+            en, es = df["en"], df["es"]
+        else:
+            en, es = df[cols[0]], df[cols[1]]
+    else:
+        en, es = df["en"], df["es"]
+    
+    support_pairs = [(eng_sample, esp_sample) for eng_sample, esp_sample in zip(en[:Sd], es[:Sd])]
+    query_pairs = [(eng_sample, esp_sample) for eng_sample, esp_sample in zip(en[Sd:Qd+Sd], es[Sd:Qd+Sd])]
     data["support"] = support_pairs
     data["query"] = query_pairs
     return data
@@ -45,12 +64,7 @@ def translation_pairs(
         data = {}
         dataset = DomainProcessing(path)
         df = dataset.process()
-        try:
-            df = df["train"]
-            df = df.rename(columns={"sentence_en":"en", "sentence_es":"es"})
-        except KeyError:
-            pass 
-        data = support_query_split(df,Sd,Qd)
+        data = support_query_split(df,Sd,Qd,dataset_type)
         return data
 
     elif dataset_type == "TM":
@@ -58,13 +72,15 @@ def translation_pairs(
         paths = []
         for tm in tqdm(tms[:limit], desc="Looking for TMs"):
             if tm.endswith(".tmx"):
-                path = Path(path / str(tm))
-                paths.append(path)
+                path = Path(path)
+                q = path / str(tm)
+                #print(q)
+                paths.append(str(q))
         try:
             dataset = DomainProcessing(paths)
             df = dataset.process()
                 
-            data = support_query_split(df,Sd,Qd)
+            data = support_query_split(df,Sd,Qd,dataset_type)
             return data
         except Exception as e:
             print(f"Error: {e}")
@@ -72,24 +88,26 @@ def translation_pairs(
 tasks = []
 Sd = 800
 Qd = 200
-auto_finance = translation_pairs(dataset_type="Dataset", 
-        path="bstraehle/en-to-es-auto-finance",
+webcrawl_en_es = translation_pairs(dataset_type="Dataset", 
+        path="Thermostatic/parallel_corpus_webcrawl_english_spanish_1",
         Sd = Sd,
         Qd = Qd)
-print(auto_finance["support"])
+print(webcrawl_en_es["support"][0])
+print(webcrawl_en_es["query"][0])
 
-tasks.append(auto_finance)
+tasks.append(webcrawl_en_es)
 financial_phrasebank = translation_pairs(dataset_type="Dataset", 
         path="NickyNicky/financial_phrasebank_traslate_En_Es",
         Sd = Sd,
         Qd = Qd)
 
 tasks.append(financial_phrasebank)
-dgt_en_es = translation_pairs(dataset_type="Dataset", 
+dgt_en_es = translation_pairs(dataset_type="TM", 
         path="Vol_2012_1/",
         Sd = Sd,
         Qd = Qd,
         limit=100)
+print(dgt_en_es["support"][0])
 tasks.append(dgt_en_es)
 
 marianNMT = MarianMAMLWrapper(base_model)
