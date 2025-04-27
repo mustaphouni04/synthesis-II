@@ -1,7 +1,7 @@
+import datasets
 from datasets import load_dataset
 from typing import List, Tuple, Dict, Optional, Union
 from pathlib import Path
-from datetime import UTC, datetime
 import lxml.etree as etree
 import PythonTmx as tmx
 import pandas as pd
@@ -13,26 +13,29 @@ class DomainProcessing:
         self.paths = [Path(p) for p in (paths if isinstance(paths,list) else [paths])]
         self.domain = None
         self.sentences = []
-        
-        for path in self.paths:
-            try:
-                self.domain = load_dataset(str(path))
-                self.content = None
-            except:
-                if type(path) == Path:
-                    path = str(path)
-                else:
-                    try:
-                        # Load a TMX file
-                        tmx_file: etree._ElementTree = etree.parse(
-                                str(path), etree.XMLParser(encoding="utf-16le")
-                        )
-                        tmx_root: etree._Element = tmx_file.getroot()
-                        self.sentences.extend(self.extract_translations(tmx_root))
-                    except etree.XMLSyntaxError as e:
-                        raise ValueError(f"Failed to parse TMX file: {e}")
-                    except Exception as e:
-                        raise RuntimeError(f"Unexpected error while processing TMX file: {e}")
+
+        if str(self.paths[0]).endswith(".csv") and isinstance(str(self.paths[0]), str):
+            self.domain = pd.read_csv(self.paths[0])
+        else:
+            for path in self.paths:
+                try:
+                    self.domain = load_dataset(str(path))
+                    self.content = None
+                except:
+                    if type(path) == Path:
+                        path = str(path)
+                    else:
+                        try:
+                            # Load a TMX file
+                            tmx_file: etree._ElementTree = etree.parse(
+                                    str(path), etree.XMLParser(encoding="utf-16le")
+                            )
+                            tmx_root: etree._Element = tmx_file.getroot()
+                            self.sentences.extend(self.extract_translations(tmx_root))
+                        except etree.XMLSyntaxError as e:
+                            raise ValueError(f"Failed to parse TMX file: {e}")
+                        except Exception as e:
+                            raise RuntimeError(f"Unexpected error while processing TMX file: {e}")
 
     def extract_translations(self, root: etree._Element) -> List[Dict[str,str]]:
         translations = []
