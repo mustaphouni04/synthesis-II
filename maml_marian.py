@@ -7,12 +7,14 @@ from domain_utils import DomainProcessing
 from typing import Tuple, Dict, List, Union, Optional
 import pandas as pd
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader, TensorDataset
 import os
+import wandb
 
 device = "cuda" if th.cuda.is_available() else "cpu"
-writer = SummaryWriter()
+wandb.require("core")
+
+wandb.login()
 
 model_name = "Helsinki-NLP/opus-mt-en-es"
 tokenizer = MarianTokenizer.from_pretrained(model_name)
@@ -135,6 +137,15 @@ marianNMT = MarianMAMLWrapper(base_model)
 maml = l2l.algorithms.MAML(marianNMT, lr=1e-4, first_order=True)
 num_epochs = 5
 outer_optimizer = optim.Adam(maml.parameters(), lr=1e-4)
+wandb.init(
+    project="maml_marian",
+    name=f"run",
+    config={
+        "learning_rate":1e-4,
+        "architecture":"MarianMT",
+        "dataset":"auto/finance/agreements/legal",
+        "epochs":5,
+    })
 
 def train(num_epochs: int, outer_optimizer, maml):
     for epoch in tqdm(range(num_epochs), desc="Epochs"):
@@ -151,23 +162,26 @@ def train(num_epochs: int, outer_optimizer, maml):
 
             support_loader = create_loader(support_inputs, support_labels, batch_size=12)
             learner = maml.clone()
+
+            inner_steps = 3
             for batch_input_ids, batch_attention_mask, batch_labels in tqdm(support_loader):
                 batch_inputs = {
                     "input_ids": batch_input_ids.to(device),
                     "attention_mask": batch_attention_mask.to(device),
                 }
                 batch_labels = batch_labels.to(device)
-                support_loss = learner(
-                    input_ids=batch_inputs["input_ids"],
-                    attention_mask=batch_inputs["attention_mask"],
-                    labels=batch_labels,
-                )
-                learner.adapt(support_loss,
-                              allow_unused=True,
-                              allow_nograd=True,)
-                writer.add_scalar("Loss/Support", support_loss.item())
+                for _ in range(inner_steps):
+                    support_loss = learner(
+                        input_ids=batch_inputs["input_ids"],
+                        attention_mask=batch_inputs["attention_mask"],
+                        labels=batch_labels,
+                    )
+                    learner.adapt(support_loss,
+                            allow_unused=True,
+                            allow_nograd=True,)
+                wandb.log({"support_loss":support_loss})
 
-            query_loader = create_loader(query_inputs, query_labels, batch_size=4)
+            query_loader = create_loader(query_inputs, query_labels, batch_size=12)
             outer_optimizer.zero_grad()
 
             for batch_q_ids, batch_q_attn, batch_q_labels in tqdm(query_loader):
@@ -180,15 +194,21 @@ def train(num_epochs: int, outer_optimizer, maml):
                     labels=batch_q_labels,
                 )
                 batch_q_loss.backward()
-                writer.add_scalar("Loss/Query", batch_q_loss.item())
-
+                wandb.log({"meta_loss":batch_q_loss})
+            
+            th.nn.utils.clip_grad_norm_(maml.parameters(), max_norm=1.0)
             outer_optimizer.step()
 
-    writer.flush()
-    writer.close()
-
+    wandb.finish()
 # Warm up training
 train(num_epochs, outer_optimizer, maml)
+
+save_dir = "./maml_opus_mt_en_es"
+hf_model: MarianMTModel = maml.module.model
+
+hf_model.save_pretrained(save_dir)
+tokenizer.save_pretrained(save_dir)
+
 
 
 
