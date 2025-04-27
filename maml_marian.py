@@ -7,9 +7,14 @@ from domain_utils import DomainProcessing
 from typing import Tuple, Dict, List, Union, Optional
 import pandas as pd
 from tqdm import tqdm
+from torch.utils.data import DataLoader, TensorDataset
 import os
+import wandb
 
 device = "cuda" if th.cuda.is_available() else "cpu"
+wandb.require("core")
+
+wandb.login()
 
 model_name = "Helsinki-NLP/opus-mt-en-es"
 tokenizer = MarianTokenizer.from_pretrained(model_name)
@@ -86,6 +91,20 @@ def translation_pairs(
         except Exception as e:
             print(f"Error: {e}")
 
+def tokenize(pairs: List[Tuple[str,str]]) -> Tuple[Dict[str, th.Tensor], Dict[str, th.Tensor]]:
+    source_texts = [en for en,es in pairs]
+    target_texts = [es for en,es in pairs]
+
+    source_batch = tokenizer(source_texts, return_tensors="pt", padding=True, truncation=True)
+    target_batch = tokenizer(target_texts, return_tensors="pt", padding=True, truncation=True)
+
+    return source_batch, target_batch["input_ids"]
+
+def create_loader(inputs, labels, batch_size):
+    dataset = TensorDataset(inputs["input_ids"], inputs["attention_mask"], labels)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return loader
+
 tasks = []
 Sd = 800
 Qd = 200
@@ -93,9 +112,6 @@ webcrawl_en_es = translation_pairs(dataset_type="Dataset",
         path="Thermostatic/parallel_corpus_webcrawl_english_spanish_1",
         Sd = Sd,
         Qd = Qd)
-print(webcrawl_en_es["support"][0])
-print(webcrawl_en_es["query"][0])
-
 tasks.append(webcrawl_en_es)
 financial_phrasebank = translation_pairs(dataset_type="Dataset", 
         path="NickyNicky/financial_phrasebank_traslate_En_Es",
@@ -108,30 +124,93 @@ dgt_en_es = translation_pairs(dataset_type="TM",
         Sd = Sd,
         Qd = Qd,
         limit=100)
-print(dgt_en_es["support"][0])
 tasks.append(dgt_en_es)
 
 automobile = translation_pairs(dataset_type="Dataset", 
         path="train_set.csv",
         Sd = Sd,
         Qd = Qd)
-print(automobile["support"][0])
+tasks.append(automobile)
 
 marianNMT = MarianMAMLWrapper(base_model)
-sentence_en = "I like to play with my friends"
-sentence_es = "Me gusta jugar con mis amigos"
 
-source = tokenizer(sentence_en, return_tensors="pt", padding=True, truncate=True)
-print(source)
+maml = l2l.algorithms.MAML(marianNMT, lr=1e-4, first_order=True)
+num_epochs = 5
+outer_optimizer = optim.Adam(maml.parameters(), lr=1e-4)
+wandb.init(
+    project="maml_marian",
+    name=f"run",
+    config={
+        "learning_rate":1e-4,
+        "architecture":"MarianMT",
+        "dataset":"auto/finance/agreements/legal",
+        "epochs":5,
+    })
 
-target = tokenizer(sentence_es, return_tensors="pt", padding=True, truncate=True)
-print(target)
+def train(num_epochs: int, outer_optimizer, maml):
+    for epoch in tqdm(range(num_epochs), desc="Epochs"):
+        for task in tqdm(tasks, desc=f"Adapting to different domains (Epoch {epoch+1})"):
+            support_inputs, support_labels = tokenize(task["support"])
+            query_inputs, query_labels = tokenize(task["query"])
 
-loss = marianNMT(input_ids = source["input_ids"].to(device),
-                 attention_mask= source["attention_mask"].to(device),
-                 labels = target["input_ids"].to(device))
+            support_inputs = {k: v.to(device) for k, v in support_inputs.items()}
+            #support_labels = {k: v.to(device) for k, v in support_labels.items()}
+            support_labels = support_labels.to(device)
+            query_inputs = {k: v.to(device) for k, v in query_inputs.items()}
+            #query_labels = {k: v.to(device) for k, v in query_labels.items()}
+            query_labels = query_labels.to(device)
 
-print(loss)
+            support_loader = create_loader(support_inputs, support_labels, batch_size=12)
+            learner = maml.clone()
+
+            inner_steps = 3
+            for batch_input_ids, batch_attention_mask, batch_labels in tqdm(support_loader):
+                batch_inputs = {
+                    "input_ids": batch_input_ids.to(device),
+                    "attention_mask": batch_attention_mask.to(device),
+                }
+                batch_labels = batch_labels.to(device)
+                for _ in range(inner_steps):
+                    support_loss = learner(
+                        input_ids=batch_inputs["input_ids"],
+                        attention_mask=batch_inputs["attention_mask"],
+                        labels=batch_labels,
+                    )
+                    learner.adapt(support_loss,
+                            allow_unused=True,
+                            allow_nograd=True,)
+                wandb.log({"support_loss":support_loss})
+
+            query_loader = create_loader(query_inputs, query_labels, batch_size=12)
+            outer_optimizer.zero_grad()
+
+            for batch_q_ids, batch_q_attn, batch_q_labels in tqdm(query_loader):
+                batch_q_ids = batch_q_ids.to(device)
+                batch_q_attn = batch_q_attn.to(device)
+                batch_q_labels = batch_q_labels.to(device)
+                batch_q_loss = learner(
+                    input_ids=batch_q_ids,
+                    attention_mask=batch_q_attn,
+                    labels=batch_q_labels,
+                )
+                batch_q_loss.backward()
+                wandb.log({"meta_loss":batch_q_loss})
+            
+            th.nn.utils.clip_grad_norm_(maml.parameters(), max_norm=1.0)
+            outer_optimizer.step()
+
+    wandb.finish()
+# Warm up training
+train(num_epochs, outer_optimizer, maml)
+
+save_dir = "./maml_opus_mt_en_es"
+hf_model: MarianMTModel = maml.module.model
+
+hf_model.save_pretrained(save_dir)
+tokenizer.save_pretrained(save_dir)
 
 
-maml = l2l.algorithms.MAML(marianNMT, lr=1e-4, first_order=False)
+
+
+
+
