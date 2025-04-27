@@ -36,14 +36,15 @@ def support_query_split(df: pd.DataFrame, Sd: int, Qd:int, dataset_type: str):
     else:
         pass
     
-    cols = ["sentence_en", "sentence_es"]
+    cols = ["sentence_en", "sentence_es", "source", "target"]
     
     if dataset_type == "Dataset":
-        ls = [col for col in cols if col in df.column_names]
+        column_names = df.column_names if hasattr(df, 'column_names') else df.columns
+        ls = [col for col in cols if col in column_names]
         if ls == []:
             en, es = df["en"], df["es"]
         else:
-            en, es = df[cols[0]], df[cols[1]]
+            en, es = df[ls[0]], df[ls[1]]
     else:
         en, es = df["en"], df["es"]
     
@@ -109,6 +110,12 @@ dgt_en_es = translation_pairs(dataset_type="TM",
         limit=100)
 print(dgt_en_es["support"][0])
 tasks.append(dgt_en_es)
+
+automobile = translation_pairs(dataset_type="Dataset", 
+        path="train_set.csv",
+        Sd = Sd,
+        Qd = Qd)
+print(automobile["support"][0])
 
 marianNMT = MarianMAMLWrapper(base_model)
 sentence_en = "I like to play with my friends"
