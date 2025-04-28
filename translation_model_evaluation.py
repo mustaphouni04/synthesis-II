@@ -23,8 +23,8 @@ import warnings
 
 # Configuration
 CSV_PATH = r"test_set.csv"
-MAX_SAMPLES = 2000 #41651  # Size of the test set
-OUTPUT_FILE = "results/translation_evaluation_results.csv"
+MAX_SAMPLES = 41651  # Size of the test set
+OUTPUT_FILE = "results/finetuned_marian_results.csv"
 BATCH_SIZE = 1
 
 # Suppress warnings
@@ -83,7 +83,7 @@ class TranslationModel:
 
 class MarianNMTModel(TranslationModel):
     """Helsinki-NLP's MarianMT model for translation"""
-    def __init__(self, model_name="Helsinki-NLP/opus-mt-en-es"):
+    def __init__(self, model_name="../marianNMT_automobiles"):
         super().__init__(name="MarianNMT")
         print(f"Loading {model_name}...")
         self.tokenizer = MarianTokenizer.from_pretrained(model_name)
@@ -219,8 +219,8 @@ def main():
     # Initialize models
     models = [
         MarianNMTModel(),
-        M2M100Model(),
-        NLLBModel()
+        #M2M100Model(),
+        #NLLBModel()
     ]
     
     # Store results
