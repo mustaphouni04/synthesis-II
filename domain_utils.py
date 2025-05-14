@@ -1,25 +1,29 @@
-import datasets
 from datasets import load_dataset
-from typing import List, Tuple, Dict, Optional, Union
+from typing import List, Dict, Union, Optional
 from pathlib import Path
 import lxml.etree as etree
-import PythonTmx as tmx
 import pandas as pd
 from tqdm import tqdm
-import os
+from domain_search import EURO_VOC_DOMAINS
+import numpy as np 
+from numpy import dot
+from numpy.linalg import norm 
+from sentence_transformers import SentenceTransformer 
 
 class DomainProcessing:
-    def __init__(self, paths: Union[str,Path, List[Union[str, Path]]]):
+    def __init__(self, paths: Union[str,Path, List[Union[str, Path]]], name: Optional[str] = None):
         self.paths = [Path(p) for p in (paths if isinstance(paths,list) else [paths])]
         self.domain = None
         self.sentences = []
+        self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+        self.domain_embeddings = self.model.encode(EURO_VOC_DOMAINS, normalize_embeddings = True)
 
         if str(self.paths[0]).endswith(".csv") and isinstance(str(self.paths[0]), str):
             self.domain = pd.read_csv(self.paths[0])
         else:
             for path in self.paths:
                 try:
-                    self.domain = load_dataset(str(path))
+                    self.domain = load_dataset(str(path), name=name, split="train")
                     self.content = None
                 except:
                     if type(path) == Path:
@@ -53,8 +57,14 @@ class DomainProcessing:
                         en_sentence = seg.text.strip() if seg.text else ""
                     elif lang.startswith("ES-ES"):
                         es_sentence = seg.text.strip() if seg.text else ""
+
+            segment_embedding = self.model.encode(en_sentence, normalize_embeddings=True)
+            similarities = self.domain_embeddings @ segment_embedding.T
+            best_index = np.argmax(similarities)
+            best_domain = EURO_VOC_DOMAINS[best_index]
+
             if en_sentence and es_sentence:
-                translations.append({"en":en_sentence, "es":es_sentence})
+                translations.append({"source":en_sentence, "target":es_sentence, "domain": best_domain})
         return translations
 
     @property
