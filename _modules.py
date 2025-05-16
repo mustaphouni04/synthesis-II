@@ -17,6 +17,7 @@ import learn2learn as l2l
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
 import wandb
+from dataclasses import dataclass
 
 EURO_VOC_DOMAINS = [
     "STATISTICS",
@@ -118,6 +119,21 @@ class MarianMAMLWrapper(nn.Module):
         )
         return outputs.loss
 
+@dataclass
+class DecoderFeatures:
+    hidden_states: tuple[th.Tensor]
+    last_hidden_state: th.Tensor
+
+@dataclass
+class EncoderFeatures:
+    hidden_states: tuple[th.Tensor]
+
+@dataclass
+class MarianFeatures:
+    encoder: EncoderFeatures
+    decoder: DecoderFeatures
+
+
 class MarianMAMLFeatures(nn.Module):
     def __init__(self, model):
         super().__init__()
@@ -129,7 +145,10 @@ class MarianMAMLFeatures(nn.Module):
             param.required_grad = False
 
     @torch.inference_mode()
-    def forward(self, input_ids, attention_mask, decoder_input_ids):
+    def forward(self, 
+                input_ids, 
+                attention_mask, 
+                decoder_input_ids) -> MarianFeatures:
         outputs = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -137,11 +156,24 @@ class MarianMAMLFeatures(nn.Module):
                 output_hidden_states=True
                 return_dict=True
                 )
-        return {
-            "encoder_hidden_states": outputs.encoder_hidden_states,
-            "decoder_hidden_states": outputs.decoder_hidden_states,
-            "last_hidden_state": outputs.last_hidden_state  # decoder last hidden state
-        }
+        return MarianFeatures(
+            encoder=EncoderFeatures(outputs.encoder_hidden_states),
+            decoder=DecoderFeatures(outputs.decoder_hidden_states, outputs.last_hidden_state)
+            )
+
+def describe_features(features: MarianFeatures | EncoderFeatures | DecoderFeatures):
+    match features:
+        case EncoderFeatures(hidden_states=hs):
+            return f"Encoder has {len(hs)} layers."
+        case DecoderFeatures(hidden_states=hs, last_hidden_state=last):
+            return f"Decoder final state shape: {last.shape}"
+        case MarianFeatures(encoder=enc, decoder=dec):
+            return (
+                f"Encoder layers: {len(enc.hidden_states)}, "
+                f"Decoder shape: {dec.last_hidden_state.shape}"
+                )
+        case _:
+            return "Unrecognized feature structure."
 
 def support_query_split(df: pd.DataFrame, Sd: int, Qd:int, dataset_type: str):
     data = {}
