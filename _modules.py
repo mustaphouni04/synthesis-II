@@ -122,11 +122,11 @@ class MarianMAMLWrapper(nn.Module):
 @dataclass
 class DecoderFeatures:
     hidden_states: tuple[th.Tensor]
-    last_hidden_state: th.Tensor
 
 @dataclass
 class EncoderFeatures:
     hidden_states: tuple[th.Tensor]
+    encoder_last_hidden_state: th.Tensor
 
 @dataclass
 class MarianFeatures:
@@ -144,7 +144,7 @@ class MarianMAMLFeatures(nn.Module):
         for param in self.model.parameters():
             param.requires_grad = False
 
-    @torch.inference_mode()
+    @th.inference_mode()
     def forward(self, 
                 input_ids, 
                 attention_mask, 
@@ -157,20 +157,20 @@ class MarianMAMLFeatures(nn.Module):
                 return_dict=True
                 )
         return MarianFeatures(
-            encoder=EncoderFeatures(outputs.encoder_hidden_states),
-            decoder=DecoderFeatures(outputs.decoder_hidden_states, outputs.last_hidden_state)
+            encoder=EncoderFeatures(outputs.encoder_hidden_states, outputs.encoder_last_hidden_state),
+            decoder=DecoderFeatures(outputs.decoder_hidden_states)
             )
 
 def describe_features(features: MarianFeatures | EncoderFeatures | DecoderFeatures):
     match features:
-        case EncoderFeatures(hidden_states=hs):
-            return f"Encoder has {len(hs)} layers."
-        case DecoderFeatures(hidden_states=hs, last_hidden_state=last):
+        case EncoderFeatures(hidden_states=hs, encoder_last_hidden_state=last):
+            return f"Encoder has {len(hs)} layers and last hidden state has shape {last.shape}."
+        case DecoderFeatures(hidden_states=hs, encoder_last_hidden_state=last):
             return f"Decoder final state shape: {last.shape}"
         case MarianFeatures(encoder=enc, decoder=dec):
             return (
-                f"Encoder layers: {len(enc.hidden_states)}, "
-                f"Decoder shape: {dec.last_hidden_state.shape}"
+                f"Encoder last hidden state shape: {enc.encoder_last_hidden_state.shape}, "
+                f"Decoder layers: {len(dec.hidden_states)}"
                 )
         case _:
             return "Unrecognized feature structure."
@@ -181,7 +181,7 @@ def support_query_split(df: pd.DataFrame, Sd: int, Qd:int, dataset_type: str):
     if "train" in df:
         df = df["train"]
     else:
-        continue 
+        pass 
     
     cols = ["sentence_en", "sentence_es", "en", "es", "source_sentence", "target_sentence"]
     
