@@ -142,7 +142,7 @@ class MarianMAMLFeatures(nn.Module):
 
     def freeze_model(self):
         for param in self.model.parameters():
-            param.required_grad = False
+            param.requires_grad = False
 
     @torch.inference_mode()
     def forward(self, 
@@ -153,7 +153,7 @@ class MarianMAMLFeatures(nn.Module):
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 decoder_input_ids=decoder_input_ids,
-                output_hidden_states=True
+                output_hidden_states=True,
                 return_dict=True
                 )
         return MarianFeatures(
