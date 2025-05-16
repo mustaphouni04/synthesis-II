@@ -1,7 +1,7 @@
-TRAIN_SET=train_set.csv
-VALID_SET=valid_set.csv
-TEST_SET=test_set.csv
-OUTPUT_DIR=tst_translation/
+TRAIN_SET=Splits/neulab_train_set.csv
+VALID_SET=Splits/neulab_valid_set.csv
+TEST_SET=Splits/neulab_test_set.csv
+OUTPUT_DIR=neulab_translation/
 TRAIN_BATCH_SIZE=12
 TEST_BATCH_SIZE=12
 MAX_SOURCE_LENGTH=512 # the max for marian 

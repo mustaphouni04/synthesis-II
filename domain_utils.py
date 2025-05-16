@@ -4,7 +4,7 @@ from pathlib import Path
 import lxml.etree as etree
 import pandas as pd
 from tqdm import tqdm
-from domain_search import EURO_VOC_DOMAINS
+from euro_voc import EURO_VOC_DOMAINS
 import numpy as np 
 from numpy import dot
 from numpy.linalg import norm 

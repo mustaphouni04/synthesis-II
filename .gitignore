@@ -187,3 +187,10 @@ Vol_2012_2/
 Vol_2012_3/
 Domains/
 Splits/
+pontoon_translation/
+pubmed_translation/
+wandb/
+NeuLab_TT/
+ELRC_EUIPO/
+domain_models/
+neulab_translation/
