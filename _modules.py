@@ -1,5 +1,5 @@
 from datasets import load_dataset
-from typing import List, Dict, Union, Optional, Tuple
+from typing import List, Dict, Union, Optional, Tuple, Any
 from pathlib import Path
 import lxml.etree as etree
 import pandas as pd
@@ -241,7 +241,7 @@ def build_samples(dsets, k_per_domain, domains):
     for idx, domain in enumerate(domains):
         pool = dsets[domain]
         picks = random.sample(pool, k=min(k_per_domain, len(pool)))
-        samples += [(src, idx) for src, _ in picks]
+        samples += [(src, tgt, idx) for src, tgt in picks]
     random.shuffle(samples)
     return samples
 
@@ -273,15 +273,15 @@ def train_epoch_aggregator(aggregator,
                            criterion,
                            device,
                            epoch,
-                           student_feat_ext,
                            student_logits,
                            student_tokenizer,
-                           distill_config):
+                           distill_config,
+                           student_feat_ext: Optional[Any] = None):
     
     T       = distill_config["temperature"]
     alpha   = distill_config["alpha"]
-    use_rep = distill_config.get("use_rep", False)
-    beta    = distill_config.get("rep_beta", 0.1)
+    #use_rep = distill_config.get("use_rep", False)
+    #beta    = distill_config.get("rep_beta", 0.1)
 
     aggregator.train()
     total_agg_loss = 0.0 
@@ -290,7 +290,7 @@ def train_epoch_aggregator(aggregator,
     train_samples = build_samples(datasets_train, batch_size, domains)
 
     for batch in tqdm(chunk(train_samples, batch_size), desc=f"Epoch {epoch} Train"):
-        srcs, labels = zip(*batch)
+        srcs, tgts, labels = zip(*batch)
         feat_list = []
 
         # Extract features from each frozen expert
@@ -319,6 +319,21 @@ def train_epoch_aggregator(aggregator,
         
         preds = agg_logits.argmax(dim=1).tolist()
 
+        enc_stu = student_tokenizer(
+            list(srcs), return_tensors="pt", padding=True,
+            truncation=True, max_length=512
+        ).to(device)
+
+        tgt_tok = student_tokenizer(
+            list(tgts), return_tensors="pt",
+            padding=True, truncation = True,
+            max_length=512
+        ).to(device)
+        
+        tgt_input_ids = tgt_tok.input_ids # (B, L)
+        dec_input_ids = tgt_input_ids[:, :-1] # (B, L-1)
+        ce_labels     = tgt_input_ids[:, 1:].contiguous() # (B, L-1)
+
         teacher_logits = []
         for i, expert_idx in enumerate(preds):
             _, tok, _, teacher = experts[expert_idx]
@@ -326,53 +341,42 @@ def train_epoch_aggregator(aggregator,
                         return_tensors="pt",
                         padding=True, truncation=True, max_length=512
                         ).to(device)
+            single_dec = dec_input_ids[i : i+1]  # (1, L-1)
 
-            dec_s = tok(["<pad>"],
-                        return_tensors="pt",
-                        padding=True, truncation=True, max_length=512
-                        ).to(device)
             t_logit = teacher(
-                input_ids           = enc_s.input_ids,
-                attention_mask      = enc_s.attention_mask,
-                decoder_input_ids   = dec_s.input_ids
-            )
+                    input_ids         = enc_s.input_ids,
+                    attention_mask    = enc_s.attention_mask,
+                    decoder_input_ids = single_dec
+                    )
             teacher_logits.append(t_logit.squeeze(0))
-        teacher_logits = th.stack(teacher_logits, dim=0) # (B, T, V)
-
-        enc_stu = student_tokenizer(
-            srcs, return_tensors="pt", padding=True,
-            truncation=True, max_length=512
-        ).to(device)
-
-        dec_stu = student_tokenizer(
-            ["<pad>"] * len(srcs), return_tensors="pt",
-            padding="max_length", truncation = False,
-            max_length=512
-        ).to(device)
+        teacher_logits = th.stack(teacher_logits, dim=0) # now (B, L-1, V)
 
         student_out = student_logits(
             input_ids         = enc_stu.input_ids,
             attention_mask    = enc_stu.attention_mask,
-            decoder_input_ids = dec_stu.input_ids
-        ) # (B, T, V)
+            decoder_input_ids = dec_input_ids
+        ) # (B, L-1, V)
 
-        tgt_ids = student_tokenizer(
-            batch_targets, # those aren't built :yet
-            return_tensors="pt", padding=True,
-            truncation=True, max_length=512
-        ).input_ids.to(device)
+        print(f"[DEBUG] student_out.shape = {student_out.shape}")
+        print(f"[DEBUG] teacher_logits.shape = {teacher_logits.shape}")
 
         # Logit KD loss 
         student_logp    = F.log_softmax(student_out / T, dim=-1)
         teacher_p       = F.softmax(teacher_logits / T, dim=-1)
+        S_min           = min(student_logp.size(1), teacher_p.size(1))
+        student_logp    = student_logp[:, :S_min, :]
+        teacher_p       = teacher_p[:,    :S_min, :].contiguous()
+        print(f"[DEBUG] after slicing teacher_p.shape = {teacher_p.shape}")
         kd_loss         = F.kl_div(student_logp, teacher_p,
                                    reduction="batchmean") * (T * T)
         # Hard CE loss on student
         ce_loss = F.cross_entropy(
-            student_out.view(-1, student_out.size(-1)),
-            tgt_ids.view(-1),
+            student_out.view(-1, student_out.size(-1)), # (B*(L-1), V)
+            ce_labels.view(-1),                         # (B*(L-1),)
             ignore_index=student_tokenizer.pad_token_id
         )
+        print("  ❯ kd_loss:", kd_loss.item())
+        print("  ❯ ce_loss:", ce_loss.item())
 
         distill_loss = alpha * kd_loss + (1 - alpha) * ce_loss
 

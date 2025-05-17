@@ -26,13 +26,14 @@ Aggregator = getattr(transformer_module, "Aggregator")
 with open('config.yml', 'r') as f:
     data = yaml.load(f, Loader=yaml.SafeLoader)
 
-models_path  = data["models_path"]
-splits       = data["splits"]
-batch_size   = data["batch_size"]
-max_epochs   = data["max_epochs"]
-device       = data["device"]
-patience     = data["patience"]
-student_path = data["student_model_path"]
+models_path    = data["models_path"]
+splits         = data["splits"]
+batch_size     = data["batch_size"]
+max_epochs     = data["max_epochs"]
+device         = data["device"]
+patience       = data["patience"]
+student_path   = data["student_model_path"]
+distill_config = data["distill"]
 
 experts, num_experts = load_and_freeze_experts(models_path, device)
 # student_logits: MarianLogits object, student_feat_ext: MarianMAMLFeatures
@@ -63,7 +64,7 @@ criterion = nn.CrossEntropyLoss()
 
 # --- 4) Training with Early Stopping & Fixed Test Set ---
 for epoch in range(1, max_epochs+1):
-    train_loss = train_epoch_aggregator(
+    train_agg_loss, train_distill_loss = train_epoch_aggregator(
         aggregator,
         experts,
         datasets_train,
@@ -72,10 +73,13 @@ for epoch in range(1, max_epochs+1):
         optimizer,
         criterion,
         device,
-        epoch
+        epoch,
+        student_logits,
+        student_tokenizer,
+        distill_config
     )
-    print(f"Epoch {epoch} ▶ Train Loss: {train_loss:.4f}")
-
+    print(f"Epoch {epoch} ▶ Train Agg Loss: {train_agg_loss:.4f} ▶ Train Distill Loss: {train_distill_loss:.4f}")
+    """
     test_acc, improved = eval_epoch_aggregator(
         aggregator,
         experts,
@@ -94,6 +98,7 @@ for epoch in range(1, max_epochs+1):
     if eval_epoch_aggregator.no_improve >= patience:
         print("Early stopping triggered.")
         break
+    """
 
 print("All done.")
 
