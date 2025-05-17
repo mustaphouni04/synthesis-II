@@ -7,7 +7,7 @@ from torch import nn
 from transformers import MarianTokenizer, MarianMTModel
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim import AdamW
-from _modules import MarianMAMLFeatures
+from _modules import MarianMAMLFeatures, MarianLogits
 import importlib
 
 # --- Import Aggregator dynamically ---
@@ -36,7 +36,8 @@ for model_dir in model_dirs:
     model     = MarianMTModel.from_pretrained(path).to(device).eval()
     tokenizer = MarianTokenizer.from_pretrained(path)
     feat_ext  = MarianMAMLFeatures(model)
-    experts.append((model, tokenizer, feat_ext))
+    teacher   = MarianLogits(model) #  (batch_size, sequence_length, config.vocab_size)) 
+    experts.append((model, tokenizer, feat_ext, teacher))
 num_experts = len(experts)
 
 # --- 2) Load & split data 80/20 ---
@@ -71,7 +72,7 @@ def chunk(lst, size):
 
 # --- 3) Instantiate Aggregator + optimizer + scheduler + loss ---
 # infer hidden_dim
-_, tok0, fe0 = experts[0]
+_, tok0, fe0, log0 = experts[0]
 enc = tok0(["Test"]*batch_size, return_tensors="pt",
            padding=True, truncation=True, max_length=512).to(device)
 dec = tok0(["<pad>"]*batch_size, return_tensors="pt",
@@ -80,6 +81,9 @@ out0 = fe0(input_ids=enc.input_ids,
            attention_mask=enc.attention_mask,
            decoder_input_ids=dec.input_ids)
 hid = out0.encoder.encoder_last_hidden_state.size(-1)
+vocab_size = log0(input_ids=enc.input_ids,
+                  attention_mask=enc.attention_mask,
+                  decoder_input_ids=dec.input_ids).size(-1)
 
 aggregator = Aggregator(
     hidden_dim=hid,
@@ -112,7 +116,7 @@ for epoch in range(1, max_epochs+1):
         srcs, labels = zip(*batch)
         feat_list = []
 
-        for _, tokenizer, feat_ext in experts:
+        for _, tokenizer, feat_ext, _ in experts:
             enc = tokenizer(list(srcs),
                             return_tensors="pt",
                             padding=True, truncation=True, max_length=512
@@ -154,7 +158,7 @@ for epoch in range(1, max_epochs+1):
             srcs, labels = zip(*batch)
             feat_list = []
 
-            for _, tokenizer, feat_ext in experts:
+            for _, tokenizer, feat_ext, teacher in experts:
                 enc = tokenizer(list(srcs),
                                 return_tensors="pt",
                                 padding=True, truncation=True, max_length=512
@@ -173,6 +177,24 @@ for epoch in range(1, max_epochs+1):
             expert_tensor = torch.stack(feat_list, dim=1)
             logits        = aggregator(expert_tensor)
             preds         = logits.argmax(dim=1).tolist()
+            batch_teacher_logits = []
+            for i, expert_idx in enumerate(preds):
+                _, tokenizer, _, teacher = experts[expert_idx]
+                enc = tokenizer([srcs[i]],
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                                ).to(device)
+                dec = tokenizer(["<pad>"],
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                                ).to(device)
+                t_logits = teacher(
+                    input_ids       = enc.input_ids,
+                    attention_mask  = enc.attention_mask,
+                    decoder_input_ids = dec.input_ids
+                )
+                batch_teacher_logits.append(t_logits.squeeze(0))
+            teacher_logits = torch.stack(batch_teacher_logits, dim=0) # (B, T, V)
             labels_t      = list(labels)
 
             for p, l in zip(preds, labels_t):

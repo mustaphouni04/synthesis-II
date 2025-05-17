@@ -119,6 +119,23 @@ class MarianMAMLWrapper(nn.Module):
         )
         return outputs.loss
 
+class MarianLogits(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+    
+    def forward(self, 
+                input_ids, 
+                attention_mask, 
+                decoder_input_ids):
+        outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                return_dict=True
+        )
+        return outputs.logits
+
 @dataclass
 class DecoderFeatures:
     hidden_states: tuple[th.Tensor]
