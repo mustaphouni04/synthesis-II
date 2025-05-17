@@ -3,90 +3,203 @@ import random
 import torch
 import pandas as pd
 from tqdm import tqdm
+from torch import nn
 from transformers import MarianTokenizer, MarianMTModel
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import AdamW
 from _modules import MarianMAMLFeatures
 import importlib
+
+# --- Import Aggregator dynamically ---
 module_path = "Meta-DMoE.src.transformer"
 transformer_module = importlib.import_module(module_path)
-aggregator = getattr(transformer_module, "Aggregator")
+Aggregator = getattr(transformer_module, "Aggregator")
 
-# --- Setup ---
-models_path = "domain_models/"
-model_dirs = sorted(os.listdir(models_path))   # expert names / dirs
-splits = {
+# --- Config ---
+models_path  = "domain_models/"
+splits       = {
     "automobile": "Splits/automobile_valid_set.csv",
     "elrc":       "Splits/elrc_valid_set.csv",
     "neulab":     "Splits/neulab_valid_set.csv",
     "pubmed":     "Splits/pubmed_valid_set.csv"
 }
-batch_size = 8
-device = "cuda" if torch.cuda.is_available() else "cpu"
+batch_size   = 32
+max_epochs   = 100
+device       = "cuda" if torch.cuda.is_available() else "cpu"
+patience     = 5  # early stopping patience
 
-# --- 1) Load each domain's data into a dict: domain -> list of (src, tgt) ---
-datasets = {}
-for domain, path in splits.items():
-    df = pd.read_csv(path).dropna(subset=["source","target"])
-    datasets[domain] = list(zip(df["source"].tolist(),
-                                df["target"].tolist()))
+# --- 1) Load & freeze experts once ---
+model_dirs = sorted(os.listdir(models_path))
+experts = []
+for model_dir in model_dirs:
+    path = os.path.join(models_path, model_dir)
+    model     = MarianMTModel.from_pretrained(path).to(device).eval()
+    tokenizer = MarianTokenizer.from_pretrained(path)
+    feat_ext  = MarianMAMLFeatures(model)
+    experts.append((model, tokenizer, feat_ext))
+num_experts = len(experts)
 
-# --- 2) Build a shuffled list of (src, expert_idx) samples ---
-all_samples = []
-num_per_domain = batch_size  
-for expert_idx, domain in enumerate(datasets):
-    samples = random.sample(datasets[domain], k=num_per_domain)
-    for src, tgt in samples:
-        all_samples.append((src, expert_idx))
+# --- 2) Load & split data 80/20 ---
+datasets_train, datasets_test = {}, {}
+for domain, csv_path in splits.items():
+    df = pd.read_csv(csv_path).dropna(subset=["source","target"])
+    pairs = list(zip(df.source, df.target))
+    random.shuffle(pairs)
+    split = int(0.8 * len(pairs))
+    datasets_train[domain] = pairs[:split]
+    datasets_test[domain]  = pairs[split:]
+domains = list(datasets_train.keys())
 
-random.shuffle(all_samples)
+# Build a fixed test_samples list covering the entire held‐out set
+test_samples = []
+for idx, domain in enumerate(domains):
+    for src, _ in datasets_test[domain]:
+        test_samples.append((src, idx))
 
-# --- 3) Function to chunk into batches ---
-def chunk(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
+def build_samples(dsets, k_per_domain):
+    samples = []
+    for idx, domain in enumerate(domains):
+        pool = dsets[domain]
+        picks = random.sample(pool, k=min(k_per_domain, len(pool)))
+        samples += [(src, idx) for src, _ in picks]
+    random.shuffle(samples)
+    return samples
 
-# --- 4) Iterate over batches, extract features, collect labels ---
-for batch in chunk(all_samples, batch_size):
-    batch_sources, batch_labels = zip(*batch)  # src list & expert_idx list
+def chunk(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i+size]
 
-    # 4.a) Prepare expert feature list
-    expert_features = []
+# --- 3) Instantiate Aggregator + optimizer + scheduler + loss ---
+# infer hidden_dim
+_, tok0, fe0 = experts[0]
+enc = tok0(["Test"]*batch_size, return_tensors="pt",
+           padding=True, truncation=True, max_length=512).to(device)
+dec = tok0(["<pad>"]*batch_size, return_tensors="pt",
+           padding=True, truncation=True, max_length=512).to(device)
+out0 = fe0(input_ids=enc.input_ids,
+           attention_mask=enc.attention_mask,
+           decoder_input_ids=dec.input_ids)
+hid = out0.encoder.encoder_last_hidden_state.size(-1)
 
-    # 4.b) For each frozen expert model
-    for model_dir in tqdm(model_dirs, desc="Extracting expert features", leave=False):
-        model_path = os.path.join(models_path, model_dir)
-        model = MarianMTModel.from_pretrained(model_path).to(device).eval()
-        tokenizer = MarianTokenizer.from_pretrained(model_path)
-        feat_ext = MarianMAMLFeatures(model)
+aggregator = Aggregator(
+    hidden_dim=hid,
+    num_experts=num_experts,
+    depth=2, heads=4, mlp_dim=hid*4, dropout=0.2
+).to(device)
 
-        # Tokenize batch of N source sentences
-        enc = tokenizer(list(batch_sources), return_tensors="pt",
-                        padding=True, truncation=True).to(device)
+optimizer = AdamW(
+    aggregator.parameters(),
+    lr=1e-4,
+    weight_decay=1e-2
+)
+scheduler = ReduceLROnPlateau(
+    optimizer, mode="max",
+    factor=0.5, patience=2
+)
+criterion = nn.CrossEntropyLoss()
 
-        dec_in = tokenizer(["<pad>"]*len(batch_sources),
-                           return_tensors="pt", padding=True).to(device)
+# --- 4) Training with Early Stopping & Fixed Test Set ---
+best_acc = 0.0
+no_improve = 0
 
-        feats = feat_ext(
-                input_ids=enc["input_ids"],
-                attention_mask=enc["attention_mask"],
-                decoder_input_ids=dec_in["input_ids"]
-        )
-        # encoder side or decoder side depending on your choice:
-        out = feats.encoder.encoder_last_hidden_state  # → (B, S, H)
-        expert_features.append(out)
+for epoch in range(1, max_epochs+1):
+    # --- Training ---
+    aggregator.train()
+    train_samples = build_samples(datasets_train, batch_size)
+    total_loss = 0.0
 
-    # 4.c) Stack into (B, N, S, H)
-    expert_tensor = torch.stack(expert_features, dim=1)
-    # expert_tensor.shape == (batch_size, num_experts, seq_len, hidden_dim)
+    for batch in tqdm(chunk(train_samples, batch_size), desc=f"Epoch {epoch} Train"):
+        srcs, labels = zip(*batch)
+        feat_list = []
 
-    # 4.d) Prepare labels tensor
-    labels = torch.tensor(batch_labels, dtype=torch.long, device=device)
-    # labels.shape == (batch_size,)
+        for _, tokenizer, feat_ext in experts:
+            enc = tokenizer(list(srcs),
+                            return_tensors="pt",
+                            padding=True, truncation=True, max_length=512
+                          ).to(device)
+            dec = tokenizer(["<pad>"]*len(srcs),
+                            return_tensors="pt",
+                            padding=True, truncation=True, max_length=512
+                          ).to(device)
 
-    # Now we can pass expert_tensor to Aggregator:
-    #logits = aggregator(expert_tensor)  # → (B, N)
-    #print(logits)
-    # loss = nn.CrossEntropyLoss()(logits, labels)
+            feats = feat_ext(
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                decoder_input_ids=dec.input_ids
+            )
+            feat_list.append(feats.encoder.encoder_last_hidden_state)
 
-    print("Batch expert_tensor:", expert_tensor.shape, "labels:", labels)
-    break  # remove this break to run through all batches
+        expert_tensor = torch.stack(feat_list, dim=1)  # (B, N, S, H)
+        logits        = aggregator(expert_tensor)     # (B, N)
+        labels_t      = torch.tensor(labels, device=device)
+        loss          = criterion(logits, labels_t)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    avg_train_loss = total_loss / (len(train_samples)/batch_size)
+    print(f"Epoch {epoch} Train Loss: {avg_train_loss:.4f}")
+
+    # --- Evaluation on the fixed test_samples ---
+    aggregator.eval()
+    correct_total = 0
+    total_total   = 0
+    correct_by_dom = {i: 0 for i in range(num_experts)}
+    total_by_dom   = {i: 0 for i in range(num_experts)}
+
+    with torch.no_grad():
+        for batch in tqdm(chunk(test_samples, batch_size), desc=f"Epoch {epoch} Test"):
+            srcs, labels = zip(*batch)
+            feat_list = []
+
+            for _, tokenizer, feat_ext in experts:
+                enc = tokenizer(list(srcs),
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                              ).to(device)
+                dec = tokenizer(["<pad>"]*len(srcs),
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                              ).to(device)
+                feats = feat_ext(
+                    input_ids=enc.input_ids,
+                    attention_mask=enc.attention_mask,
+                    decoder_input_ids=dec.input_ids
+                )
+                feat_list.append(feats.encoder.encoder_last_hidden_state)
+
+            expert_tensor = torch.stack(feat_list, dim=1)
+            logits        = aggregator(expert_tensor)
+            preds         = logits.argmax(dim=1).tolist()
+            labels_t      = list(labels)
+
+            for p, l in zip(preds, labels_t):
+                total_total     += 1
+                total_by_dom[l] += 1
+                if p == l:
+                    correct_total   += 1
+                    correct_by_dom[l] += 1
+
+    overall_acc = correct_total / total_total if total_total else 0.0
+    print(f"Epoch {epoch} Test Acc: {overall_acc*100:.2f}%")
+
+    for idx, domain in enumerate(domains):
+        dom_acc = correct_by_dom[idx] / total_by_dom[idx] if total_by_dom[idx] else 0.0
+        print(f"  {domain:12s}: {dom_acc*100:5.2f}%  ({correct_by_dom[idx]}/{total_by_dom[idx]})")
+
+    # --- Scheduler & Early Stopping ---
+    scheduler.step(overall_acc)
+    if overall_acc > best_acc:
+        best_acc = overall_acc
+        no_improve = 0
+        print(f"  New best model (Acc: {best_acc*100:.2f}%) saved.")
+    else:
+        no_improve += 1
+        if no_improve >= patience:
+            print(f"No improvement for {patience} epochs, stopping early.")
+            break
+
+print("Training & evaluation complete.")
 
