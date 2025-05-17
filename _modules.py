@@ -5,6 +5,7 @@ import lxml.etree as etree
 import pandas as pd
 from tqdm import tqdm
 import numpy as np 
+import random
 from numpy import dot
 from numpy.linalg import norm 
 from sentence_transformers import SentenceTransformer 
@@ -191,6 +192,193 @@ def describe_features(features: MarianFeatures | EncoderFeatures | DecoderFeatur
                 )
         case _:
             return "Unrecognized feature structure."
+
+
+# --- 1) Load & freeze experts once ---
+def load_and_freeze_experts(models_path, device):
+    model_dirs = sorted(os.listdir(models_path))
+    experts = []
+    for model_dir in model_dirs:
+        path = os.path.join(models_path, model_dir)
+        model     = MarianMTModel.from_pretrained(path).to(device).eval()
+        tokenizer = MarianTokenizer.from_pretrained(path)
+        feat_ext  = MarianMAMLFeatures(model)
+        teacher   = MarianLogits(model) #  (batch_size, sequence_length, config.vocab_size)) 
+        experts.append((model, tokenizer, feat_ext, teacher))
+    num_experts = len(experts)
+    return experts, num_experts
+
+def load_student(student_model_path, device):
+    model = MarianMTModel.from_pretrained(student_model_path).to(device)
+    tokenizer = MarianTokenizer.from_pretrained(student_model_path)
+    feat_ext  = MarianMAMLFeatures(model)
+    student   = MarianLogits(model) #  (batch_size, sequence_length, config.vocab_size)) 
+
+    return (model, tokenizer, feat_ext, student)
+
+def load_and_split_data(splits):
+    # --- 2) Load & split data 80/20 ---
+    datasets_train, datasets_test = {}, {}
+    for domain, csv_path in splits.items():
+        df = pd.read_csv(csv_path).dropna(subset=["source","target"])
+        pairs = list(zip(df.source, df.target))
+        random.shuffle(pairs)
+        split = int(0.8 * len(pairs))
+        datasets_train[domain] = pairs[:split]
+        datasets_test[domain]  = pairs[split:]
+    domains = list(datasets_train.keys())
+    # Build a fixed test_samples list covering the entire held‐out set
+    test_samples = []
+    for idx, domain in enumerate(domains):
+        for src, _ in datasets_test[domain]:
+            test_samples.append((src, idx))
+    
+    return datasets_train, datasets_test, domains, test_samples
+
+def build_samples(dsets, k_per_domain, domains):
+    samples = []
+    for idx, domain in enumerate(domains):
+        pool = dsets[domain]
+        picks = random.sample(pool, k=min(k_per_domain, len(pool)))
+        samples += [(src, idx) for src, _ in picks]
+    random.shuffle(samples)
+    return samples
+
+def chunk(lst, size):
+    for i in range(0, len(lst), size):
+        yield lst[i:i+size]
+
+
+# infer hidden_dim
+def infer_hidden_dim(experts, batch_size, device):
+    _, tok0, fe0, _ = experts[0]
+    enc = tok0(["Test"]*batch_size, return_tensors="pt",
+               padding=True, truncation=True, max_length=512).to(device)
+    dec = tok0(["<pad>"]*batch_size, return_tensors="pt",
+               padding=True, truncation=True, max_length=512).to(device)
+    out0 = fe0(input_ids=enc.input_ids,
+               attention_mask=enc.attention_mask,
+               decoder_input_ids=dec.input_ids)
+    hid = out0.encoder.encoder_last_hidden_state.size(-1)
+
+    return hid 
+
+def train_epoch_aggregator(aggregator,
+                           experts,
+                           datasets_train,
+                           domains,
+                           batch_size,
+                           optimizer,
+                           criterion,
+                           device,
+                           epoch):
+    aggregator.train()
+    train_samples = build_samples(datasets_train, batch_size, domains)
+    total_loss = 0.0
+
+    for batch in tqdm(chunk(train_samples, batch_size), desc=f"Epoch {epoch} Train"):
+        srcs, labels = zip(*batch)
+        feat_list = []
+
+        # Extract features from each frozen expert
+        for (_, tokenizer, feat_ext, _) in experts:
+            enc = tokenizer(list(srcs),
+                            return_tensors="pt",
+                            padding=True, truncation=True, max_length=512
+                          ).to(device)
+            dec = tokenizer(["<pad>"] * len(srcs),
+                            return_tensors="pt",
+                            padding=True, truncation=False, max_length=512
+                          ).to(device)
+
+            feats = feat_ext(
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                decoder_input_ids=dec.input_ids
+            )
+            feat_list.append(feats.encoder.encoder_last_hidden_state)
+
+        expert_tensor = th.stack(feat_list, dim=1)  # (B, N, S, H)
+        logits        = aggregator(expert_tensor)     # (B, N)
+        labels_t      = th.tensor(labels, device=device)
+        loss          = criterion(logits, labels_t)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+
+    avg_loss = total_loss / (len(train_samples) / batch_size)
+    return avg_loss
+
+def eval_epoch_aggregator(aggregator,
+                          experts,
+                          test_samples,
+                          domains,
+                          batch_size,
+                          scheduler,
+                          patience,
+                          device,
+                          epoch):
+   
+    aggregator.eval()
+    correct_total = 0
+    total_total   = 0
+    correct_by_dom = {i: 0 for i in range(len(experts))}
+    total_by_dom   = {i: 0 for i in range(len(experts))}
+
+    with th.no_grad():
+        for batch in tqdm(chunk(test_samples, batch_size), desc=f"Epoch {epoch} Test"):
+            srcs, labels = zip(*batch)
+            feat_list = []
+
+            for (_, tokenizer, feat_ext, _) in experts:
+                enc = tokenizer(list(srcs),
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                              ).to(device)
+                dec = tokenizer(["<pad>"] * len(srcs),
+                                return_tensors="pt",
+                                padding=True, truncation=False, max_length=512
+                              ).to(device)
+                feats = feat_ext(
+                    input_ids=enc.input_ids,
+                    attention_mask=enc.attention_mask,
+                    decoder_input_ids=dec.input_ids
+                )
+                feat_list.append(feats.encoder.encoder_last_hidden_state)
+
+            expert_tensor = th.stack(feat_list, dim=1)
+            logits        = aggregator(expert_tensor)
+            preds         = logits.argmax(dim=1).tolist()
+
+            for p, l in zip(preds, labels):
+                total_total     += 1
+                total_by_dom[l] += 1
+                if p == l:
+                    correct_total   += 1
+                    correct_by_dom[l] += 1
+
+    overall_acc = correct_total / total_total if total_total else 0.0
+    print(f"Epoch {epoch} ▶ Test Acc: {overall_acc*100:.2f}%")
+    for idx, dom in enumerate(domains):
+        acc = (correct_by_dom[idx] / total_by_dom[idx]
+               if total_by_dom[idx] else 0.0)
+        print(f"  {dom:12s}: {acc*100:5.2f}%  ({correct_by_dom[idx]}/{total_by_dom[idx]})")
+
+    # scheduler & early stopping logic
+    scheduler.step(overall_acc)
+    improved = overall_acc > eval_epoch_aggregator.best_acc
+    if improved:
+        eval_epoch_aggregator.best_acc = overall_acc
+        eval_epoch_aggregator.no_improve = 0
+    else:
+        eval_epoch_aggregator.no_improve += 1
+
+    return overall_acc, improved
+
+eval_epoch_aggregator.best_acc = 0.0
+eval_epoch_aggregator.no_improve = 0
 
 def support_query_split(df: pd.DataFrame, Sd: int, Qd:int, dataset_type: str):
     data = {}
