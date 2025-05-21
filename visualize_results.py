@@ -10,10 +10,10 @@ import numpy as np
 import os
 
 # Configuration
-INPUT_CSV = r"synthesis-II\results\zero-shot_results.csv"
+INPUT_CSV = r"results/merged_results.csv"
 
 
-OUTPUT_DIR = "synthesis-II/results/zero_shot_charts"  # Directory to save the charts
+OUTPUT_DIR = "results/merged_charts"  # Directory to save the charts
 
 def load_results(csv_path):
     """Load results from CSV file"""
