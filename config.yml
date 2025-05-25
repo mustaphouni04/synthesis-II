@@ -8,13 +8,15 @@ splits:
   neulab:     "Splits/neulab_valid_set.csv"
   pubmed:     "Splits/pubmed_valid_set.csv"
 
-batch_size: 8
+batch_size: 6
 max_epochs: 100
 device: "cuda"
-patience: 5 # early stopping patience  
+patience: 10 # early stopping patience  
+inner_lr: 3e-4
+meta_lr: 1e-4
 
 distill:
   temperature: 2.0
-  alpha: 0.7        # weight on KD loss
+  alpha: 0.3        # weight on KD loss
   use_rep: false    # toggle representation loss
   rep_beta: 0.1
