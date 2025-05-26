@@ -59,7 +59,7 @@ hid = infer_hidden_dim(experts, batch_size, device)
 aggregator = Aggregator(
     hidden_dim=hid,
     num_experts=num_experts,
-    depth=2, heads=4, mlp_dim=hid*4, dropout=0.2
+    depth=4, heads=8, mlp_dim=hid*4, dropout=0.2
 ).to(device)
 
 maml_agg = l2l.algorithms.MAML(aggregator, lr=inner_lr, first_order=True)
@@ -78,8 +78,8 @@ criterion = nn.CrossEntropyLoss()
 
 # Hyperparams:
 meta_batch_size = len(domains)   # one “task” per domain
-k_s = 5   # support examples per domain
-k_q = 5   # query  examples per domain
+k_s = 9   # support examples per domain
+k_q = 9   # query  examples per domain
 inner_steps = 3
 
 meta_optimizer = torch.optim.AdamW(
@@ -95,6 +95,47 @@ for _ in tqdm(range(1000)):  # 1k warmup steps
     loss.backward()
     meta_optimizer.step()
     meta_optimizer.zero_grad()
+
+print("Warming up Aggregator...")
+agg_optim = AdamW(aggregator.parameters(), lr=1e-4)
+
+domain_weights = torch.Tensor([
+    1/0.8263,
+    1/0.1037,
+    1/0.7464,
+    1/0.7008
+]).to(device)
+criterion = nn.CrossEntropyLoss(weight=domain_weights)
+
+for warmup_epoch in tqdm(range(8)):
+    total_loss = 0.0
+    domains_shuffled = domains.copy()
+    random.shuffle(domains_shuffled)
+
+    for domain in domains_shuffled + ['elrc']:
+        domain_idx = domains.index(domain) if domain != 'elrc' else domains.index('elrc')
+
+        k_per_domain = 10 if domain == 'elrc' else 8
+        batch = build_samples(datasets_train, k_per_domain=k_per_domain, domains=[domain])
+        batch = [(src, tgt, domain_idx) for src, tgt, _ in batch]
+
+        agg_loss, _ = train_step(
+                aggregator,
+                student_logits,
+                student_tokenizer,
+                experts,
+                batch,
+                distill_config,
+                device,
+                criterion,
+                only_agg=True
+        )
+        agg_loss.backward()
+        agg_optim.step()
+        agg_optim.zero_grad()
+        total_loss += agg_loss.item()
+    
+    print(f"Aggregator Warmup Epoch {warmup_epoch}: Loss={total_loss:.3f}")
 
 for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
     meta_optimizer.zero_grad()
@@ -141,26 +182,25 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
     )
     meta_optimizer.step()
 
-    """
-    test_acc, improved = eval_epoch_aggregator(
-        aggregator,
-        experts,
-        test_samples,
-        domains,
-        batch_size,
-        scheduler,
-        patience,
-        device,
-        meta_epoch
-    )
-    if improved:
-        #torch.save(aggregator.state_dict(), "best_aggregator.pt")
-        print(f"  ↳ New best model saved (Acc={test_acc*100:.2f}%)")
+    if meta_epoch == 14:
+        test_acc, improved = eval_epoch_aggregator(
+            aggregator,
+            experts,
+            test_samples,
+            domains,
+            batch_size,
+            scheduler,
+            patience,
+            device,
+            meta_epoch
+        )
+        if improved:
+            #torch.save(aggregator.state_dict(), "best_aggregator.pt")
+            print(f"  ↳ New best model saved (Acc={test_acc*100:.2f}%)")
 
-    if eval_epoch_aggregator.no_improve >= patience:
-        print("Early stopping triggered.")
-        break
-    """
+        if eval_epoch_aggregator.no_improve >= patience:
+            print("Early stopping triggered.")
+            break
 
     print(f"Meta Epoch {meta_epoch}: Meta‐Loss {meta_loss.item():.4f}")
 

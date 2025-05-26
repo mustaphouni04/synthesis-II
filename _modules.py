@@ -248,7 +248,7 @@ def chunk(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i+size]
 
-def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=2):
+def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=4):
     """
     Creates meta-tasks with mixed-domain samples.
     Each task contains `k_s` support + `k_q` query examples from various domains.
@@ -309,11 +309,11 @@ def train_step(aggregator,
     feat_list = []
     for _, tok, feat_ext, _ in experts:
         enc = tok(srcs, return_tensors="pt",
-                  padding=True, truncation=True, max_length=256
+                  padding=True, truncation=True, max_length=512
                  ).to(device)
         dec = tok(["<pad>"] * B,
                   return_tensors="pt",
-                  padding="max_length", truncation=False, max_length=256
+                  padding="max_length", truncation=False, max_length=512
                  ).to(device)
 
         feats = feat_ext(
@@ -337,7 +337,7 @@ def train_step(aggregator,
     tgt_tok      = student_tokenizer(
         list(tgts),
         return_tensors="pt",
-        padding=True, truncation=True, max_length=256
+        padding=True, truncation=True, max_length=512
     ).to(device)
     tgt_input_ids = tgt_tok.input_ids             # (B, L)
     dec_input_ids = tgt_input_ids[:, :-1]         # (B, L-1)
@@ -352,7 +352,7 @@ def train_step(aggregator,
         _, tok, _, teacher = experts[expert_idx]
         enc_s = tok([srcs[i]],
                     return_tensors="pt",
-                    padding=True, truncation=True, max_length=256
+                    padding=True, truncation=True, max_length=512
                    ).to(device)
         single_dec = dec_input_ids[i : i+1]       # (1, L-1)
         t_logit = teacher(
@@ -366,7 +366,7 @@ def train_step(aggregator,
     # (d) run student on same decoder inputs
     stu_enc = student_tokenizer(
         srcs, return_tensors="pt",
-        padding=True, truncation=True, max_length=256
+        padding=True, truncation=True, max_length=512
     ).to(device)
     student_out = student_logits(
         input_ids         = stu_enc.input_ids,
@@ -405,7 +405,7 @@ def train_step_query(student_logits,
     tgt_tok      = student_tokenizer(
         list(tgts),
         return_tensors="pt",
-        padding=True, truncation=True, max_length=256
+        padding=True, truncation=True, max_length=512
     ).to(device)
     tgt_ids      = tgt_tok.input_ids          # (B, L)
     dec_input_ids = tgt_ids[:, :-1]           # (B, L-1)
@@ -415,7 +415,7 @@ def train_step_query(student_logits,
     stu_enc = student_tokenizer(
         list(srcs),
         return_tensors="pt",
-        padding=True, truncation=True, max_length=256
+        padding=True, truncation=True, max_length=512
     ).to(device)
     student_out = student_logits(
         input_ids         = stu_enc.input_ids,
@@ -461,11 +461,11 @@ def eval_epoch_aggregator(aggregator,
             for (_, tokenizer, feat_ext, _) in experts:
                 enc = tokenizer(list(srcs),
                                 return_tensors="pt",
-                                padding=True, truncation=True, max_length=256
+                                padding=True, truncation=True, max_length=512
                               ).to(device)
                 dec = tokenizer(["<pad>"] * len(srcs),
                                 return_tensors="pt",
-                                padding=True, truncation=False, max_length=256
+                                padding=True, truncation=False, max_length=512
                               ).to(device)
                 feats = feat_ext(
                     input_ids=enc.input_ids,
