@@ -248,7 +248,7 @@ def chunk(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i+size]
 
-def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=4):
+def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=8):
     """
     Creates meta-tasks with mixed-domain samples.
     Each task contains `k_s` support + `k_q` query examples from various domains.
@@ -345,23 +345,41 @@ def train_step(aggregator,
 
     # (b) pick experts per sample
     preds = agg_logits.argmax(dim=1).tolist()
-
+    
     # (c) run chosen expert on support to get teacher_logits
     teacher_logits = []
+    teacher_lengths = []
+    
     for i, expert_idx in enumerate(preds):
         _, tok, _, teacher = experts[expert_idx]
+        
+        # Tokenize with expert's tokenizer
         enc_s = tok([srcs[i]],
                     return_tensors="pt",
-                    padding=True, truncation=True, max_length=512
-                   ).to(device)
-        single_dec = dec_input_ids[i : i+1]       # (1, L-1)
+                    padding=True, truncation=True, max_length=512).to(device)
+        
+        tgt_tok_expert = tok([tgts[i]],
+                             return_tensors="pt",
+                             padding=True, truncation=True, max_length=512).to(device)
+        single_dec = tgt_tok_expert.input_ids[:, :-1]  # (1, L-1)
+    
         t_logit = teacher(
-            input_ids          = enc_s.input_ids,
-            attention_mask     = enc_s.attention_mask,
-            decoder_input_ids  = single_dec
-        )
-        teacher_logits.append(t_logit.squeeze(0)) # (L-1, V)
-    teacher_logits = th.stack(teacher_logits, dim=0)  # (B, L-1, V)
+            input_ids=enc_s.input_ids,
+            attention_mask=enc_s.attention_mask,
+            decoder_input_ids=single_dec
+        ).squeeze(0)  # (L-1, V)
+        
+        teacher_logits.append(t_logit)
+        teacher_lengths.append(t_logit.size(0))
+    
+    # Pad and stack teacher logits
+    max_len = max(teacher_lengths)
+    padded_logits = []
+    for logit, length in zip(teacher_logits, teacher_lengths):
+        padding = max_len - length
+        padded_logits.append(F.pad(logit, (0, 0, 0, padding)))  # Pad sequence dimension
+    
+    teacher_logits = th.stack(padded_logits, dim=0)  # (B, max_len, V)
 
     # (d) run student on same decoder inputs
     stu_enc = student_tokenizer(
@@ -380,8 +398,12 @@ def train_step(aggregator,
     # Compute mask for non-pad tokens
     pad_mask = (ce_labels != student_tokenizer.pad_token_id).unsqueeze(-1)  # (B, L-1, 1)
     # Apply mask to KL divergence
-    kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none', log_target=False).sum(-1) * pad_mask.squeeze()).sum()
-    kd_loss = kd_loss / (pad_mask.sum() + 1e-8) * (T * T)
+    #kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none', log_target=False).sum(-1) * pad_mask.squeeze()).sum()
+    #kd_loss = kd_loss / (pad_mask.sum() + 1e-8) * (T * T)
+    seq_len = ce_labels.ne(student_tokenizer.pad_token_id).sum().clamp(min=1).float()
+    kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none')
+           .sum(-1)  # per-token KL
+           * pad_mask.squeeze()).sum() / seq_len  # mean per token
 
     # (f) Hard‐CE loss
     ce_loss = F.cross_entropy(
@@ -389,6 +411,9 @@ def train_step(aggregator,
             ce_labels.view(-1),                         # (B*(L-1),)
             ignore_index=student_tokenizer.pad_token_id
         )
+    print(f"Avg Agg Loss: {agg_loss.item():.3f}, "
+            f"KD Loss: {kd_loss.item():.3f}, "
+            f"CE Loss: {ce_loss.item():.3f}")
 
     distill_loss = alpha * kd_loss + (1 - alpha) * ce_loss
     return agg_loss, distill_loss 

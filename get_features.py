@@ -1,11 +1,13 @@
 import os
 import random
 import torch
+import math
 import pandas as pd
+import higher
 from tqdm import tqdm
 import learn2learn as l2l
 from torch import nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 from torch.optim import AdamW
 from _modules import (
                       train_step,
@@ -70,23 +72,26 @@ optimizer = AdamW(
     lr=1e-4,
     weight_decay=1e-2
 )
-scheduler = ReduceLROnPlateau(
-    optimizer, mode="max",
-    factor=0.5, patience=2
-)
+
 criterion = nn.CrossEntropyLoss()
 
 # Hyperparams:
 meta_batch_size = len(domains)   # one “task” per domain
 k_s = 9   # support examples per domain
 k_q = 9   # query  examples per domain
-inner_steps = 3
+inner_steps = 1
 
 meta_optimizer = torch.optim.AdamW(
     list(aggregator.parameters()) + list(student_logits.parameters()), 
     lr=meta_lr
 )
 ce = nn.CrossEntropyLoss()
+
+scheduler = CosineAnnealingLR(
+    meta_optimizer, 
+    T_max = max_epochs,
+    eta_min = 1e-6
+)
 
 print("Warming up student...")
 for _ in tqdm(range(1000)):  # 1k warmup steps
@@ -100,14 +105,14 @@ print("Warming up Aggregator...")
 agg_optim = AdamW(aggregator.parameters(), lr=1e-4)
 
 domain_weights = torch.Tensor([
-    1/0.8263,
+    1/0.6263,
     1/0.1037,
-    1/0.7464,
+    1/0.5464,
     1/0.7008
 ]).to(device)
 criterion = nn.CrossEntropyLoss(weight=domain_weights)
 
-for warmup_epoch in tqdm(range(8)):
+for warmup_epoch in tqdm(range(20)):
     total_loss = 0.0
     domains_shuffled = domains.copy()
     random.shuffle(domains_shuffled)
@@ -142,48 +147,80 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
     meta_tasks = build_meta_batch(datasets_train, domains, k_s, k_q)
     meta_batch_size = len(meta_tasks)
 
+    alpha = 0.3 + 0.4 * (1 + math.cos(math.pi * min(meta_epoch, 20)/20)) / 2
+    distill_config['alpha'] = alpha
+
     meta_loss = 0.0
     for support, query, _ in meta_tasks:
-        # 1) Clone per‐task adapters
-        agg_clone = maml_agg.clone()
-        stu_clone = maml_stu.clone()
-
-        agg_clone.eval()
-        stu_clone.eval()
-
-        # 2) Inner loop: adapt on support
-        for _ in tqdm(range(inner_steps), desc="Running through inner steps"):
-            agg_supp_loss, distill_supp_loss = train_step(
-                agg_clone, stu_clone, student_tokenizer,
-                experts, support,             # list of (src,tgt,idx)
-                distill_config, device, criterion,
-                only_agg=False       # full distill in inner loop
-            )
-            inner_loss = agg_supp_loss + distill_supp_loss
-            maml_agg.adapt(agg_supp_loss, allow_unused=True, allow_nograd=True)
-            maml_stu.adapt(distill_supp_loss, allow_unused=True, allow_nograd=True)
+        # 1. Clone models for task-specific adaptation
+        agg_clone = type(aggregator)(hidden_dim=hid, num_experts=num_experts, 
+                                depth=4, heads=8, mlp_dim=hid*4, dropout=0.2).to(device)
+        agg_clone.load_state_dict(aggregator.state_dict())
     
-        # 3) Outer loop: evaluate clones on query
-        student_ce = train_step_query(
-                stu_clone,
+        # Only clone student parameters (no need for full model copy)
+        stu_params = {n: p.clone() for n, p in student_logits.named_parameters()}
+    
+        # 2. Inner loop adaptation
+        for inner_step in range(inner_steps):
+            # Forward pass
+            agg_loss, distill_loss = train_step(
+                agg_clone,
+                student_logits,  # Use original but with param cloning
                 student_tokenizer,
-                query,               # list of (src,tgt,idx)
+                experts,
+                support,
+                distill_config,
                 device,
-            )
-        meta_loss += student_ce 
-        # average meta‐loss over all tasks
-    meta_loss = meta_loss / meta_batch_size
-
-    # 4) Meta‐update original parameters
-    meta_loss.backward()
-    torch.nn.utils.clip_grad_norm_(
-        list(aggregator.parameters()) + list(student_logits.parameters()),
-        max_norm=1.0
-    )
-    meta_optimizer.step()
-
-    if meta_epoch == 14:
-        test_acc, improved = eval_epoch_aggregator(
+                criterion,
+                only_agg=False
+                )
+            inner_loss = agg_loss + distill_loss
+        
+            # Manual gradient computation and update
+            grads_agg = torch.autograd.grad(inner_loss, agg_clone.parameters(), 
+                                       create_graph=True, allow_unused=True)
+            student_named_params = dict(student_logits.named_parameters())
+            grads_stu_raw = torch.autograd.grad(inner_loss, student_named_params.values(),
+                                    create_graph=True, allow_unused=True)
+            grads_stu = dict(zip(student_named_params.keys(), grads_stu_raw)) 
+            # Update clone parameters
+            with torch.no_grad():
+                for param, grad in zip(agg_clone.parameters(), grads_agg):
+                    if grad is not None:
+                        param -= inner_lr * grad
+                    
+                # Update student parameter clones
+                for n, param in stu_params.items():
+                    if grads_stu is not None and grads_stu.get(n) is not None:
+                        param -= inner_lr * grads_stu[n]
+    
+        # 3. Compute query loss using adapted parameters
+        # Use cloned student parameters for query
+        original_params = {}
+        for n, p in student_logits.named_parameters():
+            original_params[n] = p.data.clone()
+            p.data.copy_(stu_params[n])
+            
+        query_loss = train_step_query(
+                student_logits,
+                student_tokenizer,
+                query,
+                device
+        )
+        
+        # Restore original student parameters
+        for n, p in student_logits.named_parameters():
+            p.data.copy_(original_params[n])
+    
+        # 4. Meta-update
+        meta_loss = query_loss
+        meta_loss.backward()
+        torch.nn.utils.clip_grad_norm_(aggregator.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(student_logits.parameters(), 1.0)
+        meta_optimizer.step()
+        meta_optimizer.zero_grad() 
+    """
+    test_acc, improved = eval_epoch_aggregator(
             aggregator,
             experts,
             test_samples,
@@ -194,13 +231,14 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
             device,
             meta_epoch
         )
-        if improved:
-            #torch.save(aggregator.state_dict(), "best_aggregator.pt")
-            print(f"  ↳ New best model saved (Acc={test_acc*100:.2f}%)")
+    if improved:
+        #torch.save(aggregator.state_dict(), "best_aggregator.pt")
+        print(f"  ↳ New best model saved (Acc={test_acc*100:.2f}%)")
 
-        if eval_epoch_aggregator.no_improve >= patience:
-            print("Early stopping triggered.")
-            break
+    if eval_epoch_aggregator.no_improve >= patience:
+        print("Early stopping triggered.")
+        break
+    """
 
     print(f"Meta Epoch {meta_epoch}: Meta‐Loss {meta_loss.item():.4f}")
 
