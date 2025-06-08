@@ -78,9 +78,9 @@ criterion = nn.CrossEntropyLoss()
 
 # Hyperparams:
 meta_batch_size = len(domains)   # one “task” per domain
-k_s = 9   # support examples per domain
-k_q = 9   # query  examples per domain
-inner_steps = 1
+k_s = 7   # support examples per domain
+k_q = 7   # query  examples per domain
+inner_steps = 2
 
 meta_optimizer = torch.optim.AdamW(
     list(aggregator.parameters()) + list(student_logits.parameters()), 
