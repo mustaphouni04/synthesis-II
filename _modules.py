@@ -18,6 +18,7 @@ import learn2learn as l2l
 from torch import nn, optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from sacrebleu import corpus_bleu
 import wandb
 from dataclasses import dataclass
 
@@ -417,7 +418,6 @@ def train_step(aggregator,
 
     distill_loss = alpha * kd_loss + (1 - alpha) * ce_loss
     return agg_loss, distill_loss 
-
 def train_step_query(student_logits,
                      student_tokenizer,
                      batch,     # List[(src, tgt, domain_idx)]
@@ -527,6 +527,35 @@ def eval_epoch_aggregator(aggregator,
         eval_epoch_aggregator.no_improve += 1
 
     return overall_acc, improved
+
+def evaluate_student_bleu(datasets_test, student_model, student_tokenizer, device, max_length=512):
+
+    student_model.eval()
+    all_hyps, all_refs = [], []
+    per_domain = {}
+
+    with th.no_grad():
+        for domain, pairs in datasets_test.items():
+            srcs, tgts = zip(*pairs)
+            hyps, refs = [], []
+            for src, tgt in tqdm(zip(srcs[:20], tgts[:20])):
+                batch = student_tokenizer([src], return_tensors="pt",
+                                          padding=True, truncation=True,
+                                          max_length=max_length).to(device)
+                generated = student_model.generate(
+                    **batch
+                )
+                text = student_tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
+                hyps.append(text)
+                refs.append(tgt)
+            # domain BLEU
+            bleu = corpus_bleu(hyps, [refs])
+            per_domain[domain] = bleu.score
+            all_hyps.extend(hyps)
+            all_refs.extend(refs)
+
+    overall_bleu = corpus_bleu(all_hyps, [all_refs]).score
+    return overall_bleu, per_domain
 
 eval_epoch_aggregator.best_acc = 0.0
 eval_epoch_aggregator.no_improve = 0

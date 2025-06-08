@@ -157,11 +157,8 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
         agg_clone = type(aggregator)(hidden_dim=hid, num_experts=num_experts, 
                                 depth=4, heads=8, mlp_dim=hid*4, dropout=0.2).to(device)
         agg_clone.load_state_dict(aggregator.state_dict())
-
-        student_clone = type(student_logits)(student_logits.model).to(device)
-        student_clone.load_state_dict(student_logits.state_dict())
     
-        # Only clone student parameters 
+        # Only clone student parameters (no need for full model copy)
         stu_params = {n: p.clone() for n, p in student_logits.named_parameters()}
     
         # 2. Inner loop adaptation
@@ -169,7 +166,7 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
             # Forward pass
             agg_loss, distill_loss = train_step(
                 agg_clone,
-                student_clone,  
+                student_logits,  # Use original but with param cloning
                 student_tokenizer,
                 experts,
                 support,
@@ -180,12 +177,13 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
                 )
             inner_loss = agg_loss + distill_loss
         
-
+            # Manual gradient computation and update
             grads_agg = torch.autograd.grad(inner_loss, agg_clone.parameters(), 
                                        create_graph=True, allow_unused=True)
             student_named_params = dict(student_logits.named_parameters())
-            grads_stu = torch.autograd.grad(inner_loss, student_clone.parameters(),
+            grads_stu_raw = torch.autograd.grad(inner_loss, student_named_params.values(),
                                     create_graph=True, allow_unused=True)
+            grads_stu = dict(zip(student_named_params.keys(), grads_stu_raw)) 
             # Update clone parameters
             with torch.no_grad():
                 for param, grad in zip(agg_clone.parameters(), grads_agg):
@@ -193,23 +191,33 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
                         param -= inner_lr * grad
                     
                 # Update student parameter clones
-                for param, grad in zip(student_clone.parameters(), grads_stu):
-                    if grad is not None:
-                        param -= inner_lr * grad
+                for n, param in stu_params.items():
+                    if grads_stu is not None and grads_stu.get(n) is not None:
+                        param -= inner_lr * grads_stu[n]
     
         # 3. Compute query loss using adapted parameters
+        # Use cloned student parameters for query
+        original_params = {}
+        for n, p in student_logits.named_parameters():
+            original_params[n] = p.data.clone()
+            p.data.copy_(stu_params[n])
+            
         query_loss = train_step_query(
-                student_clone,
+                student_logits,
                 student_tokenizer,
                 query,
                 device
         )
         
+        # Restore original student parameters
+        for n, p in student_logits.named_parameters():
+            p.data.copy_(original_params[n])
+    
         # 4. Meta-update
         meta_loss = query_loss
         meta_loss.backward()
-        torch.nn.utils.clip_grad_norm_(agg_clone.parameters(), 1.0)
-        torch.nn.utils.clip_grad_norm_(student_clone.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(aggregator.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(student_logits.parameters(), 1.0)
         meta_optimizer.step()
         meta_optimizer.zero_grad() 
     """
@@ -248,3 +256,59 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
     for dom, score in per_domain_bleu.items():
         print(f"  {dom:12s}: {score:.2f}")
 
+"""
+# --- 4) Training with Early Stopping & Fixed Test Set ---
+for epoch in range(1, max_epochs+1):
+    train_agg_loss, train_distill_loss = train_step(
+        aggregator,
+        student_logits,
+        student_tokenizer,
+        experts,
+        batch,
+        distill_config,
+        device,
+        criterion
+    )
+    print(f"Epoch {epoch} ▶ Train Agg Loss: {train_agg_loss:.4f} ▶ Train Distill Loss: {train_distill_loss:.4f}")
+
+    test_acc, improved = eval_epoch_aggregator(
+        aggregator,
+        experts,
+        test_samples,
+        domains,
+        batch_size,
+        scheduler,
+        patience,
+        device,
+        epoch
+    )
+    if improved:
+        #torch.save(aggregator.state_dict(), "best_aggregator.pt")
+        print(f"  ↳ New best model saved (Acc={test_acc*100:.2f}%)")
+
+    if eval_epoch_aggregator.no_improve >= patience:
+        print("Early stopping triggered.")
+        break
+
+print("All done.")
+"""
+
+"""
+for i, expert_idx in enumerate(preds):
+                _, tokenizer, _, teacher = experts[expert_idx]
+                enc = tokenizer([srcs[i]],
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                                ).to(device)
+                dec = tokenizer(["<pad>"],
+                                return_tensors="pt",
+                                padding=True, truncation=True, max_length=512
+                                ).to(device)
+                t_logits = teacher(
+                    input_ids       = enc.input_ids,
+                    attention_mask  = enc.attention_mask,
+                    decoder_input_ids = dec.input_ids
+                )
+                batch_teacher_logits.append(t_logits.squeeze(0))
+            teacher_logits = torch.stack(batch_teacher_logits, dim=0) # (B, T, V)
+"""
