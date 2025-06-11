@@ -198,6 +198,7 @@ def describe_features(features: MarianFeatures | EncoderFeatures | DecoderFeatur
 # --- 1) Load & freeze experts once ---
 def load_and_freeze_experts(models_path, device):
     model_dirs = sorted(os.listdir(models_path))
+    print(model_dirs)
     experts = []
     for model_dir in model_dirs:
         path = os.path.join(models_path, model_dir)
@@ -214,6 +215,7 @@ def load_student(student_model_path, device):
     tokenizer = MarianTokenizer.from_pretrained(student_model_path)
     feat_ext  = MarianMAMLFeatures(model)
     student   = MarianLogits(model) #  (batch_size, sequence_length, config.vocab_size)) 
+    assert student.model is model
 
     return (model, tokenizer, feat_ext, student)
 
@@ -249,7 +251,7 @@ def chunk(lst, size):
     for i in range(0, len(lst), size):
         yield lst[i:i+size]
 
-def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=8):
+def build_meta_batch(dsets, domains, k_s, k_q, tasks_per_domain=4):
     """
     Creates meta-tasks with mixed-domain samples.
     Each task contains `k_s` support + `k_q` query examples from various domains.
@@ -290,134 +292,124 @@ def infer_hidden_dim(experts, batch_size, device):
 
     return hid 
 
-def train_step(aggregator,
-               student_logits,
-               student_tokenizer,
-               experts,
-               batch,               # List[(src, tgt, domain_idx), ...]
-               distill_config,
-               device,
-               criterion,
-               only_agg: bool = False):
-    
-    T     = distill_config["temperature"]
+def train_step(
+    aggregator,
+    student_logits,
+    student_tokenizer,
+    experts,
+    batch,               # List[(src, tgt, domain_idx), ...]
+    distill_config,
+    device,
+    criterion,
+    only_agg: bool = False
+):
+    T = distill_config["temperature"]
     alpha = distill_config["alpha"]
 
     srcs, tgts, labels = zip(*batch)
     B = len(srcs)
 
-    # ----- 1) Aggregator (domain‐selection) loss -----
+    # ----- 1) Aggregator (domain-selection) loss -----
     feat_list = []
     for _, tok, feat_ext, _ in experts:
-        enc = tok(srcs, return_tensors="pt",
-                  padding=True, truncation=True, max_length=512
-                 ).to(device)
-        dec = tok(["<pad>"] * B,
-                  return_tensors="pt",
-                  padding="max_length", truncation=False, max_length=512
-                 ).to(device)
+        enc = tok(srcs, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+        dec = tok(["<pad>"] * B, return_tensors="pt", padding="max_length", truncation=False, max_length=512).to(device)
 
         feats = feat_ext(
-            input_ids          = enc.input_ids,
-            attention_mask     = enc.attention_mask,
-            decoder_input_ids  = dec.input_ids
+            input_ids=enc.input_ids,
+            attention_mask=enc.attention_mask,
+            decoder_input_ids=dec.input_ids
         )
         feat_list.append(feats.encoder.encoder_last_hidden_state)
 
     feat_list = [F.layer_norm(f, [f.size(-1)]) for f in feat_list]
-    expert_tensor = th.stack(feat_list, dim=1)     # (B, N, S, H)
-    agg_logits    = aggregator(expert_tensor)         # (B, N)
-    labels_t      = th.tensor(labels, device=device)
-    agg_loss      = criterion(agg_logits, labels_t)
+    expert_tensor = th.stack(feat_list, dim=1)  # (B, N, S, H)
+    agg_logits = aggregator(expert_tensor)      # (B, N)
+    labels_t = th.tensor(labels, device=device)
+    agg_loss = criterion(agg_logits, labels_t)
 
     if only_agg:
         return agg_loss, th.tensor(0.0, device=device)
 
-    # ----- 2) Distillation loss -----
-    # (a) teacher‐force inputs for student
-    tgt_tok      = student_tokenizer(
+    # ----- 2) Soft Expert Selection + Logit Aggregation -----
+    weights = F.softmax(agg_logits, dim=1)  # (B, N)
+
+    # Collect logits from all experts for the full batch
+    all_expert_logits = []  # Will store (N, B, L-1, V)
+    for expert_idx in range(weights.size(1)):  # Iterate over all experts
+        _, tok, _, expert = experts[expert_idx]
+
+        # Tokenize source and target for the full batch
+        enc = tok(srcs, return_tensors="pt", padding=True, truncation=True, max_length=512).to(device)
+        dec_input_ids = tok(tgts, return_tensors="pt", padding=True, truncation=True, max_length=512).input_ids[:, :-1].to(device)
+
+        with th.no_grad():
+            expert_out = expert(
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                decoder_input_ids=dec_input_ids
+            )
+
+        all_expert_logits.append(expert_out)  # (B, L-1, V)
+
+    # Stack expert logits → (N, B, L-1, V)
+    expert_logits_stack = th.stack(all_expert_logits)
+
+    # Interpolate expert logits using attention weights
+    # expert_logits_stack: (N, B, L-1, V)
+    # weights: (B, N)
+    # Output: (B, L-1, V)
+    teacher_logits = th.einsum("bn,nblv->blv", weights, expert_logits_stack)
+
+    # ----- 3) Student Inference -----
+    tgt_tok = student_tokenizer(
         list(tgts),
         return_tensors="pt",
-        padding=True, truncation=True, max_length=512
+        padding=True,
+        truncation=True,
+        max_length=512
     ).to(device)
-    tgt_input_ids = tgt_tok.input_ids             # (B, L)
-    dec_input_ids = tgt_input_ids[:, :-1]         # (B, L-1)
-    ce_labels     = tgt_input_ids[:, 1:].contiguous()  # (B, L-1)
+    ce_labels = tgt_tok.input_ids[:, 1:].contiguous()  # (B, L-1)
+    dec_input_ids = tgt_tok.input_ids[:, :-1]          # (B, L-1)
 
-    # (b) pick experts per sample
-    preds = agg_logits.argmax(dim=1).tolist()
-    
-    # (c) run chosen expert on support to get teacher_logits
-    teacher_logits = []
-    teacher_lengths = []
-    
-    for i, expert_idx in enumerate(preds):
-        _, tok, _, teacher = experts[expert_idx]
-        
-        # Tokenize with expert's tokenizer
-        enc_s = tok([srcs[i]],
-                    return_tensors="pt",
-                    padding=True, truncation=True, max_length=512).to(device)
-        
-        tgt_tok_expert = tok([tgts[i]],
-                             return_tensors="pt",
-                             padding=True, truncation=True, max_length=512).to(device)
-        single_dec = tgt_tok_expert.input_ids[:, :-1]  # (1, L-1)
-    
-        t_logit = teacher(
-            input_ids=enc_s.input_ids,
-            attention_mask=enc_s.attention_mask,
-            decoder_input_ids=single_dec
-        ).squeeze(0)  # (L-1, V)
-        
-        teacher_logits.append(t_logit)
-        teacher_lengths.append(t_logit.size(0))
-    
-    # Pad and stack teacher logits
-    max_len = max(teacher_lengths)
-    padded_logits = []
-    for logit, length in zip(teacher_logits, teacher_lengths):
-        padding = max_len - length
-        padded_logits.append(F.pad(logit, (0, 0, 0, padding)))  # Pad sequence dimension
-    
-    teacher_logits = th.stack(padded_logits, dim=0)  # (B, max_len, V)
-
-    # (d) run student on same decoder inputs
     stu_enc = student_tokenizer(
-        srcs, return_tensors="pt",
-        padding=True, truncation=True, max_length=512
+        srcs,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=512
     ).to(device)
+
     student_out = student_logits(
-        input_ids         = stu_enc.input_ids,
-        attention_mask    = stu_enc.attention_mask,
-        decoder_input_ids = dec_input_ids
+        input_ids=stu_enc.input_ids,
+        attention_mask=stu_enc.attention_mask,
+        decoder_input_ids=dec_input_ids
     )  # (B, L-1, V)
 
-    # (e) KD loss
+    # ----- 4) Loss Calculation -----
+    # KL Divergence for distillation
     student_logp = F.log_softmax(student_out / T, dim=-1)
-    teacher_p    = F.softmax(teacher_logits / T, dim=-1)
-    # Compute mask for non-pad tokens
+    teacher_p = F.softmax(teacher_logits / T, dim=-1)
     pad_mask = (ce_labels != student_tokenizer.pad_token_id).unsqueeze(-1)  # (B, L-1, 1)
-    # Apply mask to KL divergence
-    #kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none', log_target=False).sum(-1) * pad_mask.squeeze()).sum()
-    #kd_loss = kd_loss / (pad_mask.sum() + 1e-8) * (T * T)
-    seq_len = ce_labels.ne(student_tokenizer.pad_token_id).sum().clamp(min=1).float()
-    kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none')
-           .sum(-1)  # per-token KL
-           * pad_mask.squeeze()).sum() / seq_len  # mean per token
 
-    # (f) Hard‐CE loss
+    kd_loss = (F.kl_div(student_logp, teacher_p, reduction='none')
+               .sum(-1) * pad_mask.squeeze()).sum() / pad_mask.sum().clamp(min=1)
+
+    # Cross-Entropy Loss
     ce_loss = F.cross_entropy(
-            student_out.view(-1, student_out.size(-1)), # (B*(L-1), V)
-            ce_labels.view(-1),                         # (B*(L-1),)
-            ignore_index=student_tokenizer.pad_token_id
-        )
-    print(f"Avg Agg Loss: {agg_loss.item():.3f}, "
-            f"KD Loss: {kd_loss.item():.3f}, "
-            f"CE Loss: {ce_loss.item():.3f}")
+        student_out.view(-1, student_out.size(-1)),
+        ce_labels.view(-1),
+        ignore_index=student_tokenizer.pad_token_id
+    )
 
     distill_loss = alpha * kd_loss + (1 - alpha) * ce_loss
-    return agg_loss, distill_loss 
+
+    print(f"Avg Agg Loss: {agg_loss.item():.3f}, "
+          f"KD Loss: {kd_loss.item():.3f}, "
+          f"CE Loss: {ce_loss.item():.3f}")
+
+    return agg_loss, distill_loss
+
 def train_step_query(student_logits,
                      student_tokenizer,
                      batch,     # List[(src, tgt, domain_idx)]

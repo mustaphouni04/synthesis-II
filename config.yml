@@ -3,12 +3,12 @@ models_path: "domain_models/"
 student_model_path: "Helsinki-NLP/opus-mt-en-es"
 
 splits:
-  automobile: "Splits/automobile_valid_set.csv"
-  elrc:       "Splits/elrc_valid_set.csv"
-  neulab:     "Splits/neulab_valid_set.csv"
-  pubmed:     "Splits/pubmed_valid_set.csv"
+  automobile: "Splits/automobile_train_set.csv"
+  elrc:       "Splits/elrc_train_set.csv"
+  neulab:     "Splits/neulab_train_set.csv"
+  pubmed:     "Splits/pubmed_train_set.csv"
 
-batch_size: 6
+batch_size: 12
 max_epochs: 100
 device: "cuda"
 patience: 10 # early stopping patience  
