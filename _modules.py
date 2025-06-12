@@ -333,6 +333,7 @@ def train_step(
 
     # ----- 2) Soft Expert Selection + Logit Aggregation -----
     weights = F.softmax(agg_logits, dim=1)  # (B, N)
+    #print("Aggregator Weights:", weights.detach().cpu().numpy())
 
     # Collect logits from all experts for the full batch
     all_expert_logits = []  # Will store (N, B, L-1, V)

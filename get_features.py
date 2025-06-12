@@ -79,7 +79,7 @@ for p in student_logits.model.parameters():
     p.requires_grad = True
 
 datasets_train, datasets_test, domains, test_samples = load_and_split_data(splits)
-domains = ['elrc', 'neulab', 'pubmed', 'automobile']
+#domains = ['elrc', 'neulab', 'pubmed', 'automobile']
 
 # --- 3) Instantiate Aggregator + optimizer + scheduler + loss ---
 
@@ -107,8 +107,8 @@ criterion = nn.CrossEntropyLoss()
 
 # Hyperparams:
 meta_batch_size = len(domains)   # one "task" per domain
-k_s = 7   # support examples per domain
-k_q = 7   # query  examples per domain
+k_s = 6   # support examples per domain
+k_q = 6   # query  examples per domain
 inner_steps = 1
 
 meta_optimizer = torch.optim.AdamW(
@@ -143,7 +143,7 @@ domain_weights = torch.Tensor([
 ]).to(device)
 criterion = nn.CrossEntropyLoss(weight=domain_weights)
 
-for warmup_epoch in tqdm(range(20)):
+for warmup_epoch in tqdm(range(1)):
     total_loss = 0.0
     domains_shuffled = domains.copy()
     random.shuffle(domains_shuffled)
@@ -213,7 +213,7 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
         )
 
         # Accumulate meta-loss
-        meta_loss_total += query_loss + 0.2 * agg_loss
+        meta_loss_total += query_loss + 0.1 * agg_loss
 
     # 3. Meta-Update: Backprop through adaptation steps
     meta_loss_total.backward()
@@ -253,5 +253,17 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
         print(f"Overall student BLEU: {overall_bleu:.2f}")
         for dom, score in per_domain_bleu.items():
             print(f"  {dom:12s}: {score:.2f}")
+
+        test_acc, improved = eval_epoch_aggregator(
+            aggregator,
+            experts,
+            test_samples,
+            domains,
+            batch_size,
+            scheduler,
+            patience,
+            device,
+            meta_epoch
+        ) 
 
     scheduler.step()
