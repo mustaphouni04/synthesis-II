@@ -10,24 +10,23 @@ from learn2learn.algorithms.meta_sgd import meta_sgd_update
 
 import learn2learn.algorithms.meta_sgd as _ms
 
-def adapt_with_retain(self, loss, first_order=None, retain_graph=False):
-    # Copy–pasted & extended from learn2learn/algorithms/meta_sgd.py
-    if first_order is None:
-        first_order = self.first_order
-    second_order = not first_order
+def simple_adapt(self, loss, first_order=None, retain_graph=False):
     # Compute gradients w.r.t. the *underlying* module's parameters
-    gradients = torch.autograd.grad(
+    grads = torch.autograd.grad(
         loss,
-        self.module.parameters(),
-        create_graph=second_order,
+        list(self.module.parameters()),
+        create_graph=not self.first_order,
         retain_graph=retain_graph,
         allow_unused=True,
     )
-    # In-place update of self.module using the free‐function
-    meta_sgd_update(self.module, self.lrs, gradients)
+    # In-place update: p <- p - lr * grad
+    for p, g, lr in zip(self.module.parameters(), grads, self.lrs):
+        if g is not None:
+            p.sub_(lr * g)
+            #p.data = p.data - lr * g
     return self
 
-_ms.MetaSGD.adapt = adapt_with_retain
+_ms.MetaSGD.adapt = simple_adapt
 
 from learn2learn.algorithms.meta_sgd import MetaSGD
 from torch import nn
@@ -96,6 +95,9 @@ for p in aggregator.parameters():
 
 maml_agg = MetaSGD(aggregator, lr=inner_lr, first_order=True)
 maml_stu = MetaSGD(student_logits, lr=inner_lr, first_order=True)
+num_params = sum(1 for _ in student_logits.model.parameters())
+num_lrs    = len(maml_stu.lrs)
+print("student parameters:", num_params, "learning rates:", num_lrs)
 
 optimizer = AdamW(
     aggregator.parameters(),
@@ -107,12 +109,12 @@ criterion = nn.CrossEntropyLoss()
 
 # Hyperparams:
 meta_batch_size = len(domains)   # one "task" per domain
-k_s = 6   # support examples per domain
-k_q = 6   # query  examples per domain
+k_s = 12   # support examples per domain
+k_q = 12   # query  examples per domain
 inner_steps = 1
 
 meta_optimizer = torch.optim.AdamW(
-    list(aggregator.parameters()) + list(student_logits.parameters()), 
+    list(student_logits.parameters()), 
     lr=meta_lr
 )
 ce = nn.CrossEntropyLoss()
@@ -124,10 +126,11 @@ scheduler = CosineAnnealingLR(
 )
 
 print("Warming up student...")
-student_optim = AdamW(student_logits.parameters(), lr=meta_lr)
-for _ in tqdm(range(1500)):  # 1.5k warmup steps
+student_optim = AdamW(student_logits.parameters(), lr=meta_lr) # meta_lr
+for _ in tqdm(range(250)):  # 1.5k warmup steps
     batch = build_samples(datasets_train, k_s+k_q, domains)[:batch_size]
-    loss = train_step_query(student_logits, student_tokenizer, batch, device)
+    loss = train_step_query(student_logits, student_tokenizer, batch,
+                            experts, distill_config, device)
     loss.backward()
     student_optim.step()
     student_optim.zero_grad()
@@ -143,7 +146,7 @@ domain_weights = torch.Tensor([
 ]).to(device)
 criterion = nn.CrossEntropyLoss(weight=domain_weights)
 
-for warmup_epoch in tqdm(range(1)):
+for warmup_epoch in tqdm(range(20)):
     total_loss = 0.0
     domains_shuffled = domains.copy()
     random.shuffle(domains_shuffled)
@@ -173,6 +176,9 @@ for warmup_epoch in tqdm(range(1)):
     
     print(f"Aggregator Warmup Epoch {warmup_epoch}: Loss={total_loss:.3f}")
 
+for p in aggregator.parameters():
+    p.requires_grad = False
+
 for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
     meta_optimizer.zero_grad()
     meta_tasks = build_meta_batch(datasets_train, domains, k_s, k_q)
@@ -186,7 +192,7 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
         # 1. Inner Loop Adaptation
         for inner_step in range(inner_steps):
             # Compute combined loss: aggregator + distillation
-            agg_loss, distill_loss = train_step(
+            _, distill_loss = train_step(
                 agg_clone,
                 student_clone,  
                 student_tokenizer,
@@ -198,22 +204,22 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
                 only_agg=False
             )
             # Combine losses for adaptation
-            inner_loss = agg_loss + distill_loss  # Both modules get gradients
+            #inner_loss = agg_loss + distill_loss  # Both modules get gradients
             
             # Adapt both clones
-            agg_clone.adapt(inner_loss, first_order=True, retain_graph=True)
-            student_clone.adapt(inner_loss, first_order=True, retain_graph=False)
+            #agg_clone.adapt(agg_loss, first_order=True, retain_graph=True)
+            student_clone.adapt(distill_loss, first_order=True, retain_graph=False)
 
         # 2. Outer Loop: Query Loss 
-        query_loss = train_step_query(
-            student_clone,
-            student_tokenizer,
-            query,
-            device
-        )
+        query_loss = train_step_query(student_clone, 
+                                      student_tokenizer, 
+                                      query,
+                                      experts, 
+                                      distill_config, 
+                                      device)
 
         # Accumulate meta-loss
-        meta_loss_total += query_loss + 0.1 * agg_loss
+        meta_loss_total += query_loss #+ 0.1 * agg_loss
 
     # 3. Meta-Update: Backprop through adaptation steps
     meta_loss_total.backward()
@@ -257,7 +263,7 @@ for meta_epoch in tqdm(range(max_epochs), desc="Training..."):
         test_acc, improved = eval_epoch_aggregator(
             aggregator,
             experts,
-            test_samples,
+            test_samples[:1000],
             domains,
             batch_size,
             scheduler,
