@@ -1,86 +1,110 @@
-# Translation Model Evaluation
+# Web Wizard: Translation Model Evaluation + Web Interface
 
-This project evaluates the performance of three different open-source translation models for English to Spanish translation using a CSV file containing reference translations.
+This project combines an interactive web interface with robust backend evaluation of machine translation models from English to Spanish. It supports running evaluations, visualizing results, and viewing translation output — all via a Flask + React web app in Docker.
 
-## Models Evaluated
+## Translation Models Evaluated
 
-1. **MarianNMT** (Helsinki-NLP/opus-mt-en-es) - A specialized English to Spanish translation model
-2. **M2M100** (facebook/m2m100_418M) - Facebook's multilingual translation model
-3. **NLLB** (facebook/nllb-200-distilled-600M) - Meta's No Language Left Behind model
+| Model | Description |
+|-------|-------------|
+| `Helsinki-NLP/opus-mt-en-es` | MarianNMT-based specialized English → Spanish model |
+| `facebook/m2m100_418M` | Facebook's multilingual M2M100 model |
+| `facebook/nllb-200-distilled-600M` | Meta's No Language Left Behind (NLLB) |
 
 ## Evaluation Metrics
 
-The script evaluates translations using the following metrics:
+We evaluate translations using the following metrics:
 
-- **BLEU** - Measures n-gram precision with brevity penalty
-- **CHRF** - Character n-gram F-score
-- **METEOR** - Metric for Evaluation of Translation with Explicit Ordering
-- **BERTScore** - Semantic similarity using BERT embeddings
+- **BLEU** – N-gram precision with brevity penalty  
+- **CHRF** – Character n-gram F-score  
+- **METEOR** – Word-level metric using synonym matching and ordering  
+- **BERTScore** – Semantic similarity using BERT embeddings  
 
-## Installation
+## Quickstart (Using Docker)
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) installed
+- Optional: [Git](https://git-scm.com/)
+
+### 1. Clone the Repository
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd <repository-directory>
+git clone https://github.com/JosepBonetSaez/web-wizard-html-helper-60.git
+cd web-wizard-html-helper-60
+```
 
-# Install dependencies
+### 2. Build and Run the Docker Container
+
+```bash
+docker build -t translation-evaluator .
+docker run -d -p 5000:5000 --name evaluator-container translation-evaluator
+```
+
+The web app will be available at: [http://localhost:5000](http://localhost:5000)
+
+## Backend CLI Evaluation (Optional)
+
+If you want to run the evaluation without Docker, you can also do it using the CLI:
+
+### 1. Set up Environment
+
+```bash
+cd ml_server
 pip install -r requirements.txt
 ```
 
-## Usage
-
-### Evaluation Script
+### 2. Run Evaluation
 
 ```bash
-python translation_model_evaluation.py --csv path/to/your/translations.csv
+python translation_model_evaluation.py --csv path/to/translations.csv --samples 1000 --batch-size 16
 ```
 
-#### Command Line Arguments
-
-- `--csv`: Path to CSV file with translations (required)
-- `--output`: Path to output CSV file (default: translation_evaluation_results.csv)
-- `--samples`: Maximum number of samples to evaluate (default: all)
-- `--batch-size`: Batch size for translation (default: 8)
-
-### Visualization Script
-
-After running the evaluation, you can visualize the results:
+### 3. Visualize Results
 
 ```bash
 python visualize_results.py --csv translation_evaluation_results.csv
 ```
 
-#### Command Line Arguments
+## Input CSV Format
 
-- `--csv`: Path to CSV file with evaluation results (required)
-- `--output-dir`: Directory to save charts (default: charts)
-
-### CSV Format
-
-The CSV file should contain at least two columns:
-- `source`: The source text in English
-- `target`: The reference translation in Spanish
-
-## Example
-
-```bash
-# Run evaluation
-python translation_model_evaluation.py --csv translations.csv --samples 1000 --batch-size 16
-
-# Visualize results
-python visualize_results.py --csv translation_evaluation_results.csv
-```
+| Column | Description                     |
+|--------|---------------------------------|
+| `source` | English sentence               |
+| `target` | Reference Spanish translation |
 
 ## Output
 
-The evaluation script will:
-1. Print evaluation results for each model
-2. Show example translations
-3. Save detailed results to a CSV file
-4. Print a comparison of models across different metrics
+The evaluation will:
 
-The visualization script will generate:
-1. Bar charts comparing models across different metrics
-2. A radar chart showing the performance of each model across all metrics
-3. Separate charts for grammatical and semantic metrics
+- Print comparison results in terminal
+- Save a CSV of detailed scores per model
+- Display sample translations
+- Create charts (if visualizing) for:
+  - Bar charts per metric
+  - Radar chart comparing models
+  - Grammatical vs semantic breakdowns
+
+## Web Interface Features
+
+- Upload a CSV for batch evaluation
+- See per-model scores and ranking
+- View sample translations
+- Download results
+
+## Developer Notes
+
+- React frontend is built using [Vite](https://vitejs.dev/)
+- Flask backend serves static frontend and handles model inference
+- Dockerfile uses multi-stage build to optimize size and performance
+
+## Contributing
+
+Contributions welcome. Feel free to:
+
+- Suggest new metrics or models
+- Improve UI/UX of the web interface
+- Report bugs
+
+## License
+
+MIT – see `LICENSE` file.
