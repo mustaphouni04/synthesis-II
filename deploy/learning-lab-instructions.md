@@ -1,18 +1,18 @@
 
-# ✅ Complete AWS Learning Lab Deployment Guide
+# Complete AWS Learning Lab Deployment Guide
 
-## 🔧 Prerequisites (AWS Learning Lab)
-- ✅ EC2 instance (Ubuntu-based, t3.medium recommended)
-- ✅ Web terminal access via EC2 Instance Connect
-- ✅ Your project code in GitHub OR local files
+## Prerequisites (AWS Learning Lab)
+- EC2 instance (Ubuntu-based, t3.medium recommended)
+- Web terminal access via EC2 Instance Connect
+- Your project code in GitHub OR local files
 
-## 🚀 Step 1: Access EC2 via Web Terminal
+## Step 1: Access EC2 via Web Terminal
 1. Open **AWS Console**
 2. Go to **EC2** → **Instances**
 3. Click your instance → **Connect** → **EC2 Instance Connect**
 4. **Connect** to open web terminal
 
-## 📦 Step 2: Get Your Code on EC2
+## Step 2: Get Your Code on EC2
 
 ### Option A: From GitHub (Recommended)
 ```bash
@@ -30,7 +30,7 @@ scp -i your-key.pem -r ./your-app-folder ubuntu@<EC2_PUBLIC_IP>:~/
 cd your-app-folder
 ```
 
-## 🐳 Step 3: Deploy with One Command
+## Step 3: Deploy with One Command
 ```bash
 # Make the deployment script executable
 chmod +x deploy/ec2-deploy.sh
@@ -42,7 +42,7 @@ chmod +x deploy/ec2-deploy.sh
 ## 🔓 Step 4: Configure Security Group
 Follow the instructions in `deploy/security-group-setup.md`
 
-## ✅ Step 5: Test Your Deployment
+## Step 5: Test Your Deployment
 
 ### Health Check
 ```bash
@@ -60,7 +60,7 @@ curl -X POST http://<EC2_PUBLIC_IP>/api/translate \
 ### Web Interface
 Open in browser: `http://<EC2_PUBLIC_IP>`
 
-## 📈 Monitoring & Management
+## Monitoring & Management
 
 ### View Logs
 ```bash
@@ -82,7 +82,7 @@ docker stop translation-app
 docker ps -a
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### If models are still downloading:
 - Wait 1-5 minutes for first run
