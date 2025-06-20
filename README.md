@@ -29,7 +29,7 @@ We evaluate translations using the following metrics:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/JosepBonetSaez/web-wizard-html-helper-60.git
+git clone https://github.com/mustaphouni04/synthesis-II.git
 cd web-wizard-html-helper-60
 ```
 
