@@ -30,7 +30,7 @@ We evaluate translations using the following metrics:
 
 ```bash
 git clone https://github.com/mustaphouni04/synthesis-II.git
-cd web-wizard-html-helper-60
+cd synthesis-II
 ```
 
 ### 2. Build and Run the Docker Container
